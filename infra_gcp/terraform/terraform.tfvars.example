@@ -1,0 +1,12 @@
+# GCP Configuration
+project_id = "your-gcp-project-id"
+region     = "us-central1"
+
+# GitHub Configuration
+github_repo_owner    = "your-github-username"
+github_repo_name     = "x-unfurls"
+github_repo_owner_id = "123456789"  # Get via: gh api users/your-github-username --jq .id
+
+# Container Images (update after first Terraform apply)
+# webhook_image = "us-central1-docker.pkg.dev/your-project/x-unfurls/webhook:latest"
+# worker_image  = "us-central1-docker.pkg.dev/your-project/x-unfurls/worker:latest"

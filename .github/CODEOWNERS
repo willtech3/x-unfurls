@@ -1,0 +1,8 @@
+# Code owners for X Unfurls
+
+# Default owner for everything
+* @YOUR_GITHUB_USERNAME
+
+# Infrastructure changes require review
+/infra_gcp/ @YOUR_GITHUB_USERNAME
+/.github/ @YOUR_GITHUB_USERNAME
