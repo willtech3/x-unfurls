@@ -1,17 +1,64 @@
 # Deployment Guide
 
-This guide walks through deploying X Unfurls to Google Cloud Platform.
+This guide walks through deploying X Unfurls to Google Cloud Platform using a CI/CD-first approach where **all infrastructure is managed via GitHub Actions** - no local Terraform execution required.
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        GitHub Actions                            │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐  │
+│  │ Build/Test  │───▶│ Build Images│───▶│ Terraform Apply     │  │
+│  └─────────────┘    └─────────────┘    │ (Infrastructure +   │  │
+│                                         │  Deploy Images)     │  │
+│                                         └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                    Workload Identity Federation
+                          (OIDC - keyless)
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Google Cloud Platform                       │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐  │
+│  │ GCS Bucket   │  │ Artifact     │  │ Cloud Run             │  │
+│  │ (TF State)   │  │ Registry     │  │ ├─ Webhook (public)   │  │
+│  └──────────────┘  └──────────────┘  │ └─ Worker (internal)  │  │
+│                                       └───────────────────────┘  │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐  │
+│  │ Secret       │  │ Pub/Sub      │  │ Workload Identity     │  │
+│  │ Manager      │  │ (Job Queue)  │  │ Federation            │  │
+│  └──────────────┘  └──────────────┘  └───────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## Prerequisites
 
 - GCP project with billing enabled
-- `gcloud` CLI installed and authenticated
-- `terraform` >= 1.6.0 installed
+- `gcloud` CLI installed and authenticated (for bootstrap only)
+- `gh` CLI installed (GitHub CLI)
 - GitHub repository created
 - Slack workspace with admin access
 - xAI API key
 
-## Step 1: Slack App Setup
+**Not required locally:** Terraform (runs only in CI)
+
+## Deployment Phases
+
+| Phase | What | Where | When |
+|-------|------|-------|------|
+| 1 | Slack App Setup | Slack Admin Console | Once |
+| 2 | Bootstrap GCP | Local terminal (gcloud) | Once |
+| 3 | Bootstrap CI | GitHub Actions | Once |
+| 4 | Configure Slack URLs | Slack Admin Console | Once |
+| 5 | Populate Secrets | Local terminal (gcloud) | Once |
+| 6 | Test & Verify | Slack | Once |
+| Ongoing | Deploy Updates | GitHub Actions (auto) | Every push |
+
+---
+
+## Phase 1: Slack App Setup
 
 ### 1.1 Create Slack App
 
@@ -23,15 +70,15 @@ This guide walks through deploying X Unfurls to Google Cloud Platform.
 ### 1.2 Configure OAuth Scopes
 
 Navigate to **OAuth & Permissions** and add these Bot Token Scopes:
-- `links:read` - Receive link info
-- `links:write` - Perform unfurling
-- `chat:write` - Post/update via Web API
+- `links:read` - Receive link shared events
+- `links:write` - Unfurl links
+- `chat:write` - Post messages
 
 ### 1.3 Enable Event Subscriptions
 
 1. Navigate to **Event Subscriptions**
 2. Enable Events: **On**
-3. Request URL: (We'll set this after deploying - leave blank for now)
+3. Request URL: Leave blank for now (set in Phase 4)
 4. Subscribe to Bot Events:
    - `link_shared`
 
@@ -42,229 +89,427 @@ Navigate to **OAuth & Permissions** and add these Bot Token Scopes:
    - `x.com`
    - `twitter.com`
 
-### 1.5 Enable Interactivity (Optional - for action buttons)
+### 1.5 Enable Interactivity
 
 1. Navigate to **Interactivity & Shortcuts**
 2. Enable Interactivity: **On**
-3. Request URL: (Same as events URL, we'll set later)
+3. Request URL: Leave blank for now (set in Phase 4)
 
 ### 1.6 Install App to Workspace
 
 1. Navigate to **Install App**
 2. Click "Install to Workspace"
 3. Authorize the app
-4. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
-5. Navigate to **Basic Information** and copy the **Signing Secret**
+4. **Save these values** (needed in Phase 5):
+   - **Bot User OAuth Token** (starts with `xoxb-`) from Install App page
+   - **Signing Secret** from Basic Information page
 
-Save these values - you'll need them for secrets.
+---
 
-## Step 2: GCP Infrastructure Setup
+## Phase 2: Bootstrap GCP Resources
 
-### 2.1 Enable APIs and Set Up Project
+This phase creates the minimal GCP resources needed before CI can take over. Run these commands locally **once**.
+
+### 2.1 Set Environment Variables
 
 ```bash
-# Set your project
+# Your GCP project ID
 export PROJECT_ID="your-gcp-project-id"
+
+# Your GitHub username or organization
+export GITHUB_OWNER="your-github-username"
+
+# Set gcloud project
 gcloud config set project $PROJECT_ID
-
-# Enable billing if not already enabled
-gcloud beta billing projects link $PROJECT_ID --billing-account=YOUR_BILLING_ACCOUNT_ID
 ```
 
-### 2.2 Get GitHub Owner ID
+### 2.2 Get Required IDs
 
 ```bash
-# Get your GitHub numeric owner ID (prevents repo squatting attacks)
-gh api users/YOUR_GITHUB_USERNAME --jq .id
+# Get GCP project number
+gcloud projects describe $PROJECT_ID --format='value(projectNumber)'
+# Save this as PROJECT_NUMBER
+
+# Get GitHub numeric owner ID (prevents repo squatting attacks)
+gh api users/$GITHUB_OWNER --jq .id
+# Save this as GITHUB_OWNER_ID
 ```
 
-### 2.3 Configure Terraform Variables
+### 2.3 Create Terraform State Bucket
 
 ```bash
-cd infra_gcp/terraform
-cp terraform.tfvars.example terraform.tfvars
+# Create GCS bucket for Terraform remote state
+gsutil mb -l us-central1 gs://${PROJECT_ID}-terraform-state
+
+# Enable versioning for state recovery
+gsutil versioning set on gs://${PROJECT_ID}-terraform-state
 ```
 
-Edit `terraform.tfvars`:
-```hcl
-project_id           = "your-gcp-project-id"
-region               = "us-central1"
-github_repo_owner    = "your-github-username"
-github_repo_name     = "x-unfurls"
-github_repo_owner_id = "123456789"  # From step 2.2
-```
+### 2.4 Create Bootstrap Service Account
 
-### 2.4 Deploy Infrastructure
+For the first CI run, we need a service account key (temporary - removed after Workload Identity Federation is created).
 
 ```bash
-cd infra_gcp/terraform
+# Create bootstrap service account
+gcloud iam service-accounts create x-unfurls-bootstrap \
+  --display-name="X Unfurls Bootstrap (TEMPORARY)"
 
-# Initialize Terraform
-terraform init
+# Grant required permissions for initial terraform apply
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:x-unfurls-bootstrap@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/editor"
 
-# Review the plan
-terraform plan
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:x-unfurls-bootstrap@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/iam.securityAdmin"
 
-# Apply (creates all GCP resources)
-terraform apply
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:x-unfurls-bootstrap@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/resourcemanager.projectIamAdmin"
+
+# Create and download key (TEMPORARY - will be deleted after bootstrap)
+gcloud iam service-accounts keys create bootstrap-key.json \
+  --iam-account=x-unfurls-bootstrap@${PROJECT_ID}.iam.gserviceaccount.com
+
+# Display the key (you'll paste this into GitHub)
+cat bootstrap-key.json
 ```
 
-Save the outputs - you'll need them for GitHub Actions and Slack configuration.
+⚠️ **Security Note:** This key is temporary. We'll delete it after the first successful deployment creates Workload Identity Federation.
 
-### 2.5 Populate Secrets
+---
+
+## Phase 3: Bootstrap CI Pipeline
+
+### 3.1 Configure GitHub Repository Variables
+
+Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions**
+
+Add these **Variables** (Variables tab):
+
+| Variable | Value | Example |
+|----------|-------|---------|
+| `GCP_PROJECT_ID` | Your GCP project ID | `my-project-123` |
+| `GCP_PROJECT_NUMBER` | From step 2.2 | `123456789012` |
+| `GH_REPO_OWNER_ID` | From step 2.2 | `12345678` |
+
+### 3.2 Configure GitHub Repository Secrets
+
+Add these **Secrets** (Secrets tab):
+
+| Secret | Value |
+|--------|-------|
+| `GCP_BOOTSTRAP_CREDENTIALS` | Contents of `bootstrap-key.json` from step 2.4 |
+
+### 3.3 Trigger Bootstrap Deployment
+
+Push to main to trigger the first deployment:
 
 ```bash
-# Set secrets in GCP Secret Manager
-echo "xoxb-your-bot-token" | gcloud secrets versions add x-unfurls-slack-bot-token --data-file=-
-echo "your-signing-secret" | gcloud secrets versions add x-unfurls-slack-signing-secret --data-file=-
-echo "your-xai-api-key" | gcloud secrets versions add x-unfurls-xai-api-key --data-file=-
-```
-
-## Step 3: GitHub Actions Setup
-
-### 3.1 Configure Repository Variables
-
-Go to your GitHub repository → Settings → Secrets and variables → Actions → Variables
-
-Add these **Variables** (not secrets):
-- `GCP_PROJECT_ID`: Your GCP project ID
-- `GCP_PROJECT_NUMBER`: Your GCP project number (from `gcloud projects describe $PROJECT_ID`)
-- `GCP_WORKLOAD_IDENTITY_PROVIDER`: From Terraform output `workload_identity_provider`
-- `GCP_CICD_SERVICE_ACCOUNT`: From Terraform output `cicd_service_account_email`
-
-### 3.2 Trigger First Deployment
-
-```bash
-# Commit and push to main
 git add .
-git commit -m "Initial deployment"
+git commit -m "Bootstrap deployment"
 git push origin main
 ```
 
-GitHub Actions will:
-1. Run tests and linting
-2. Build Docker images
-3. Push to Artifact Registry
-4. Deploy to Cloud Run
+The workflow will:
+1. Authenticate using the bootstrap service account key
+2. Run `terraform apply` to create all infrastructure including Workload Identity Federation
+3. Build and deploy the Docker images
 
-## Step 4: Update Slack App URLs
+### 3.4 Capture Terraform Outputs
 
-After the first deployment:
-
-1. Get the webhook URL from GitHub Actions output or:
-   ```bash
-   gcloud run services describe x-unfurls-webhook --region=us-central1 --format='value(status.url)'
-   ```
-
-2. Go to your Slack App → **Event Subscriptions**:
-   - Request URL: `https://your-webhook-url/slack/events`
-   - Slack will verify the URL (should show ✅ Verified)
-
-3. Go to **Interactivity & Shortcuts**:
-   - Request URL: `https://your-webhook-url/slack/interactive`
-
-4. **Reinstall the app** to your workspace (required after changing unfurl domains):
-   - Settings → Install App → Reinstall to Workspace
-
-## Step 5: Test the Integration
-
-1. Open any Slack channel where the app is installed
-2. Post an X/Twitter URL, e.g.:
-   ```
-   https://x.com/example/status/1234567890
-   ```
-3. You should see a rich unfurl appear within a few seconds!
-
-## Step 6: Monitoring and Debugging
-
-### View Logs
+After the first successful run, get the Workload Identity outputs from the GitHub Actions logs or run:
 
 ```bash
-# Webhook logs
-gcloud run services logs read x-unfurls-webhook --region=us-central1 --limit=50
+# Get Workload Identity Provider path
+gcloud iam workload-identity-pools providers describe github-provider \
+  --workload-identity-pool=github-actions-pool \
+  --location=global \
+  --format='value(name)'
 
-# Worker logs
-gcloud run services logs read x-unfurls-worker --region=us-central1 --limit=50
-
-# Filter by event type
-gcloud run services logs read x-unfurls-worker --region=us-central1 --filter='jsonPayload.event="job_received"'
+# Get CI/CD service account email
+echo "x-unfurls-cicd@${PROJECT_ID}.iam.gserviceaccount.com"
 ```
 
-### Check Pub/Sub
+### 3.5 Switch to Workload Identity Federation
+
+Now that WIF exists, update GitHub to use keyless authentication:
+
+1. Go to **Settings** → **Secrets and variables** → **Actions** → **Variables**
+
+2. Add these variables:
+
+| Variable | Value |
+|----------|-------|
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Output from step 3.4 (full path starting with `projects/`) |
+| `GCP_CICD_SERVICE_ACCOUNT` | `x-unfurls-cicd@PROJECT_ID.iam.gserviceaccount.com` |
+
+3. **Delete the bootstrap secret:**
+   - Go to **Secrets** tab
+   - Delete `GCP_BOOTSTRAP_CREDENTIALS`
+
+### 3.6 Clean Up Bootstrap Service Account
 
 ```bash
-# View topic
-gcloud pubsub topics describe x-unfurls-jobs
+# Delete the local key file
+rm bootstrap-key.json
 
-# View subscription
-gcloud pubsub subscriptions describe x-unfurls-jobs-push
+# Delete all keys for the bootstrap service account
+gcloud iam service-accounts keys list \
+  --iam-account=x-unfurls-bootstrap@${PROJECT_ID}.iam.gserviceaccount.com \
+  --format='value(name)' | xargs -I {} gcloud iam service-accounts keys delete {} \
+  --iam-account=x-unfurls-bootstrap@${PROJECT_ID}.iam.gserviceaccount.com --quiet
 
-# Check dead letter queue
-gcloud pubsub subscriptions pull x-unfurls-jobs-dlq-pull --limit=10
+# Optionally delete the bootstrap service account entirely
+gcloud iam service-accounts delete x-unfurls-bootstrap@${PROJECT_ID}.iam.gserviceaccount.com --quiet
 ```
 
-### Common Issues
+### 3.7 Verify Keyless Authentication
 
-**"Invalid signature" errors:**
-- Verify `SLACK_SIGNING_SECRET` in Secret Manager matches your Slack app
-
-**"No unfurl appears":**
-- Check Cloud Logging for errors
-- Verify the app is installed and has correct scopes
-- Ensure unfurl domains (`x.com`, `twitter.com`) are registered
-- Reinstall the app after changing domains
-
-**"Pub/Sub permission denied":**
-- Verify service account IAM bindings in Terraform
-- Check that Pub/Sub push subscription has correct OIDC token config
-
-## Step 7: Optional - Remove Slack's Native X Preview
-
-If you see both your custom unfurl AND Slack's native X preview:
-
-1. Go to your Slack workspace settings (admin required)
-2. Navigate to **Settings & permissions** → **Permissions** → **Manage link previews**
-3. Block previews from:
-   - `x.com`
-   - `twitter.com`
-
-This keeps other link previews enabled while removing only X previews.
-
-## Updating the Application
-
-To deploy updates:
+Push a small change to verify the pipeline works with Workload Identity Federation:
 
 ```bash
-# Make your changes
+git commit --allow-empty -m "Verify WIF authentication"
+git push origin main
+```
+
+Check GitHub Actions - it should authenticate without the bootstrap credentials.
+
+---
+
+## Phase 4: Configure Slack URLs
+
+After successful deployment, configure Slack to send events to your webhook.
+
+### 4.1 Get Webhook URL
+
+From GitHub Actions output or:
+
+```bash
+gcloud run services describe x-unfurls-webhook \
+  --region=us-central1 \
+  --format='value(status.url)'
+```
+
+### 4.2 Update Slack Event Subscriptions
+
+1. Go to your Slack App → **Event Subscriptions**
+2. Set Request URL: `https://YOUR_WEBHOOK_URL/slack/events`
+3. Wait for verification checkmark ✅
+
+### 4.3 Update Slack Interactivity
+
+1. Go to **Interactivity & Shortcuts**
+2. Set Request URL: `https://YOUR_WEBHOOK_URL/slack/interactive`
+
+### 4.4 Reinstall App
+
+**Required** after changing unfurl domains:
+
+1. Go to **Install App**
+2. Click "Reinstall to Workspace"
+3. Authorize
+
+---
+
+## Phase 5: Populate Secrets
+
+Add the actual secret values to GCP Secret Manager:
+
+```bash
+# Slack Bot Token (from Phase 1.6)
+echo -n "xoxb-your-bot-token-here" | \
+  gcloud secrets versions add x-unfurls-slack-bot-token --data-file=-
+
+# Slack Signing Secret (from Phase 1.6)
+echo -n "your-signing-secret-here" | \
+  gcloud secrets versions add x-unfurls-slack-signing-secret --data-file=-
+
+# xAI API Key
+echo -n "your-xai-api-key-here" | \
+  gcloud secrets versions add x-unfurls-xai-api-key --data-file=-
+```
+
+**Note:** Use `echo -n` to avoid trailing newlines in secrets.
+
+---
+
+## Phase 6: Test & Verify
+
+### 6.1 Test the Integration
+
+1. Open any Slack channel in your workspace
+2. Post an X/Twitter URL:
+   ```
+   https://x.com/OpenAI/status/1234567890
+   ```
+3. Within a few seconds, you should see a rich unfurl with:
+   - Author info and avatar
+   - Full post text
+   - Engagement metrics
+   - Top replies (if any)
+   - Grok AI summary
+
+### 6.2 Check Logs if Issues
+
+```bash
+# Webhook service logs
+gcloud run services logs read x-unfurls-webhook --region=us-central1 --limit=20
+
+# Worker service logs
+gcloud run services logs read x-unfurls-worker --region=us-central1 --limit=20
+```
+
+### 6.3 Common Issues
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| "Invalid signature" | Wrong signing secret | Re-add secret in Phase 5 |
+| No unfurl appears | App not installed properly | Reinstall app (Phase 4.4) |
+| Unfurl domains not working | Domains not registered | Check Event Subscriptions → App Unfurl Domains |
+| Pub/Sub permission denied | IAM misconfigured | Re-run `terraform apply` via CI |
+
+---
+
+## Ongoing: Deploy Updates
+
+After initial setup, deployments are fully automated:
+
+```bash
+# Make changes
 git add .
 git commit -m "Your changes"
 git push origin main
 ```
 
-GitHub Actions will automatically rebuild and deploy.
+GitHub Actions will:
+1. ✅ Run tests and linting
+2. ✅ Build Docker images
+3. ✅ Push to Artifact Registry
+4. ✅ Run `terraform apply` (updates infrastructure + deploys images)
+5. ✅ Verify deployment
+
+### Infrastructure Changes
+
+All infrastructure changes go through the same pipeline:
+
+1. Edit files in `infra_gcp/terraform/`
+2. Commit and push to `main`
+3. Terraform applies changes automatically
+
+**Benefits:**
+- No local Terraform state
+- No credential management
+- Infrastructure drift is automatically corrected
+- Full audit trail in git history
+
+---
+
+## Monitoring
+
+### View Logs
+
+```bash
+# Webhook logs (recent)
+gcloud run services logs read x-unfurls-webhook --region=us-central1 --limit=50
+
+# Worker logs with filter
+gcloud run services logs read x-unfurls-worker --region=us-central1 \
+  --filter='jsonPayload.event="xai_fetch_success"'
+
+# Tail logs in real-time
+gcloud beta run services logs tail x-unfurls-webhook --region=us-central1
+```
+
+### Check Pub/Sub Queue
+
+```bash
+# View pending messages (if any stuck)
+gcloud pubsub subscriptions describe x-unfurls-jobs-push
+
+# Check dead letter queue for failed jobs
+gcloud pubsub subscriptions pull x-unfurls-jobs-dlq-pull --limit=10 --auto-ack
+```
+
+### Service Health
+
+```bash
+# Check service status
+gcloud run services describe x-unfurls-webhook --region=us-central1 \
+  --format='table(status.conditions.type,status.conditions.status)'
+
+gcloud run services describe x-unfurls-worker --region=us-central1 \
+  --format='table(status.conditions.type,status.conditions.status)'
+```
+
+---
 
 ## Cost Management
 
-Expected costs with free tier:
-- **Cloud Run**: Free (well under 2M requests/month)
-- **Pub/Sub**: Free (under 10 GiB/month)
-- **Secret Manager**: Free (3 secrets, under 10K accesses)
-- **Artifact Registry**: ~$0-5/month (watch storage)
+Expected monthly costs (free tier):
 
-To minimize costs:
-- Set `min_instance_count = 0` in Cloud Run (auto-scale to zero)
-- Monitor Artifact Registry storage and clean old images
-- Review Cloud Logging retention settings
+| Resource | Cost | Notes |
+|----------|------|-------|
+| Cloud Run | $0 | Under 2M requests/month |
+| Pub/Sub | $0 | Under 10 GiB/month |
+| Secret Manager | $0 | 3 secrets, minimal access |
+| Artifact Registry | $0-5 | Watch storage usage |
+| GCS (TF state) | $0 | Minimal storage |
+
+**Total: $0-5/month** for a 7-person workspace
+
+### Reduce Artifact Registry Costs
+
+The Terraform config includes a cleanup policy keeping only the 3 most recent image versions. Monitor with:
+
+```bash
+gcloud artifacts docker images list \
+  us-central1-docker.pkg.dev/${PROJECT_ID}/x-unfurls \
+  --include-tags
+```
+
+---
 
 ## Teardown
 
 To destroy all infrastructure:
 
-```bash
-cd infra_gcp/terraform
-terraform destroy
-```
+1. Push a change that runs `terraform destroy`:
+   ```bash
+   # Or run manually with appropriate credentials
+   cd infra_gcp/terraform
+   terraform destroy
+   ```
 
-Note: This does NOT delete:
-- Container images in Artifact Registry (delete manually if needed)
-- Cloud Logging data
+2. Delete the state bucket:
+   ```bash
+   gsutil rm -r gs://${PROJECT_ID}-terraform-state
+   ```
+
+3. Remove the Slack app:
+   - Go to https://api.slack.com/apps
+   - Select your app → Settings → Delete App
+
+---
+
+## Security Notes
+
+### Workload Identity Federation
+
+After bootstrap, the CI/CD pipeline uses **keyless authentication**:
+- No service account keys stored in GitHub
+- OIDC tokens exchanged for short-lived GCP credentials
+- Restricted to `main` branch of your specific repository
+- Uses numeric GitHub owner ID to prevent username squatting attacks
+
+### Secret Management
+
+- All secrets stored in GCP Secret Manager
+- No secrets in code or environment variables
+- Cloud Run services access secrets at runtime via IAM
+
+### Network Security
+
+- Webhook service: Public (required for Slack)
+- Worker service: Internal only (Pub/Sub push via OIDC)
+- No direct internet access from worker

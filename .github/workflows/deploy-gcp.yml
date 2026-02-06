@@ -7,6 +7,19 @@ on:
     branches: [main]
 
 env:
+  # Set these in GitHub: Settings → Secrets and variables → Actions → Variables
+  # Required variables:
+  #   GCP_PROJECT_ID           - GCP project ID
+  #   GCP_PROJECT_NUMBER       - GCP project number
+  #   GH_REPO_OWNER_ID         - Numeric GitHub owner ID (gh api users/OWNER --jq .id)
+  #
+  # After bootstrap, add these variables:
+  #   GCP_WORKLOAD_IDENTITY_PROVIDER - Full WIF provider path (from terraform output)
+  #   GCP_CICD_SERVICE_ACCOUNT       - Service account email (from terraform output)
+  #
+  # Bootstrap only (delete after first successful deploy):
+  #   GCP_BOOTSTRAP_CREDENTIALS (secret) - Service account key JSON
+  #
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
   WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -46,28 +59,52 @@ jobs:
           uv run pytest tests/ -q
 
   # ==========================================================================
-  # Build and Push Docker Images
+  # Build and Push Docker Images (only on main branch)
   # ==========================================================================
   build-images:
     needs: build-and-test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
 
+    # Required for Workload Identity Federation
     permissions:
       contents: read
       id-token: write
+
+    outputs:
+      webhook_image: ${{ steps.set-outputs.outputs.webhook_image }}
+      worker_image: ${{ steps.set-outputs.outputs.worker_image }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Authenticate to Google Cloud
-        id: auth
+      # Try WIF first, fall back to bootstrap credentials
+      - name: Authenticate to Google Cloud (Workload Identity)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        id: auth-wif
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ env.CICD_SERVICE_ACCOUNT }}
           token_format: access_token
+
+      - name: Authenticate to Google Cloud (Bootstrap)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER == ''
+        id: auth-bootstrap
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_BOOTSTRAP_CREDENTIALS }}
+          token_format: access_token
+
+      - name: Set auth output
+        id: auth
+        run: |
+          if [ -n "${{ steps.auth-wif.outputs.access_token }}" ]; then
+            echo "access_token=${{ steps.auth-wif.outputs.access_token }}" >> $GITHUB_OUTPUT
+          else
+            echo "access_token=${{ steps.auth-bootstrap.outputs.access_token }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -103,8 +140,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Set image outputs
+        id: set-outputs
+        run: |
+          echo "webhook_image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/x-unfurls/webhook:${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "worker_image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/x-unfurls/worker:${{ github.sha }}" >> $GITHUB_OUTPUT
+
   # ==========================================================================
-  # Deploy to Cloud Run
+  # Deploy Infrastructure via Terraform (only on main branch)
   # ==========================================================================
   deploy:
     needs: build-images
@@ -116,30 +159,70 @@ jobs:
       id-token: write
 
     steps:
-      - name: Authenticate to Google Cloud
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Try WIF first, fall back to bootstrap credentials
+      - name: Authenticate to Google Cloud (Workload Identity)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ env.CICD_SERVICE_ACCOUNT }}
 
+      - name: Authenticate to Google Cloud (Bootstrap)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER == ''
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_BOOTSTRAP_CREDENTIALS }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.0"
+
+      - name: Terraform Init
+        working-directory: infra_gcp/terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ env.PROJECT_ID }}-terraform-state" \
+            -backend-config="prefix=x-unfurls"
+
+      - name: Terraform Apply
+        working-directory: infra_gcp/terraform
+        run: |
+          terraform apply -auto-approve \
+            -var="project_id=${{ env.PROJECT_ID }}" \
+            -var="region=${{ env.REGION }}" \
+            -var="github_repo_owner=${{ github.repository_owner }}" \
+            -var="github_repo_name=x-unfurls" \
+            -var="github_repo_owner_id=${{ vars.GH_REPO_OWNER_ID }}" \
+            -var="webhook_image=${{ needs.build-images.outputs.webhook_image }}" \
+            -var="worker_image=${{ needs.build-images.outputs.worker_image }}"
+
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
-
-      - name: Deploy webhook service
-        run: |
-          gcloud run deploy ${{ env.WEBHOOK_SERVICE }} \
-            --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/x-unfurls/webhook:${{ github.sha }} \
-            --region=${{ env.REGION }} \
-            --project=${{ env.PROJECT_ID }}
-
-      - name: Deploy worker service
-        run: |
-          gcloud run deploy ${{ env.WORKER_SERVICE }} \
-            --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/x-unfurls/worker:${{ github.sha }} \
-            --region=${{ env.REGION }} \
-            --project=${{ env.PROJECT_ID }}
 
       - name: Verify deployment
         run: |
           echo "Webhook URL: $(gcloud run services describe ${{ env.WEBHOOK_SERVICE }} --region=${{ env.REGION }} --format='value(status.url)')"
           echo "Worker URL: $(gcloud run services describe ${{ env.WORKER_SERVICE }} --region=${{ env.REGION }} --format='value(status.url)')"
+
+      - name: Output Terraform values (for bootstrap)
+        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER == ''
+        working-directory: infra_gcp/terraform
+        run: |
+          echo "=============================================="
+          echo "BOOTSTRAP COMPLETE - Configure these GitHub Variables:"
+          echo "=============================================="
+          echo ""
+          echo "GCP_WORKLOAD_IDENTITY_PROVIDER:"
+          terraform output -raw workload_identity_provider
+          echo ""
+          echo ""
+          echo "GCP_CICD_SERVICE_ACCOUNT:"
+          terraform output -raw cicd_service_account_email
+          echo ""
+          echo ""
+          echo "After adding these variables, DELETE the GCP_BOOTSTRAP_CREDENTIALS secret."
+          echo "=============================================="

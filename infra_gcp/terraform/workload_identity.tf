@@ -76,6 +76,12 @@ resource "google_project_iam_member" "cicd_run_developer" {
   member  = "serviceAccount:${google_service_account.cicd.email}"
 }
 
+resource "google_project_iam_member" "cicd_iam_admin" {
+  project = var.project_id
+  role    = "roles/resourcemanager.projectIamAdmin"
+  member  = "serviceAccount:${google_service_account.cicd.email}"
+}
+
 resource "google_service_account_iam_member" "cicd_act_as_webhook" {
   service_account_id = google_service_account.webhook_runtime.name
   role               = "roles/iam.serviceAccountUser"
@@ -86,4 +92,24 @@ resource "google_service_account_iam_member" "cicd_act_as_worker" {
   service_account_id = google_service_account.worker_runtime.name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.cicd.email}"
+}
+
+resource "google_service_account_iam_member" "cicd_act_as_pubsub_invoker" {
+  service_account_id = google_service_account.pubsub_push_invoker.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.cicd.email}"
+}
+
+# =============================================================================
+# Outputs for GitHub Actions configuration
+# =============================================================================
+
+output "workload_identity_provider" {
+  description = "Workload Identity Provider resource name (use in GitHub Actions auth)"
+  value       = google_iam_workload_identity_pool_provider.github.name
+}
+
+output "cicd_service_account_email" {
+  description = "CI/CD service account email (use in GitHub Actions auth)"
+  value       = google_service_account.cicd.email
 }
