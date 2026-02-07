@@ -7,6 +7,8 @@ resource "google_cloud_run_v2_service" "webhook" {
   name     = "x-unfurls-webhook"
   location = var.region
 
+  deletion_protection = false
+
   invoker_iam_disabled = true # Allow Slack to call without Google auth
 
   ingress = "INGRESS_TRAFFIC_ALL"
