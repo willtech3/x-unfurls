@@ -30,10 +30,26 @@ def valid_response_data() -> dict:
         "created_at": "2024-06-15T10:30:00Z",
         "text": "Hello world!",
         "media": [
-            {"type": "image", "url": "https://img.x.com/1.jpg", "thumbnail_url": None, "alt_text": "Photo"},
-            {"type": "video", "url": "https://vid.x.com/1.mp4", "thumbnail_url": "https://img.x.com/t.jpg", "alt_text": None},
+            {
+                "type": "image",
+                "url": "https://img.x.com/1.jpg",
+                "thumbnail_url": None,
+                "alt_text": "Photo",
+            },
+            {
+                "type": "video",
+                "url": "https://vid.x.com/1.mp4",
+                "thumbnail_url": "https://img.x.com/t.jpg",
+                "alt_text": None,
+            },
         ],
-        "metrics": {"likes": 5000, "reposts": 1200, "replies": 300, "views": 500000, "bookmarks": 42},
+        "metrics": {
+            "likes": 5000,
+            "reposts": 1200,
+            "replies": 300,
+            "views": 500000,
+            "bookmarks": 42,
+        },
         "top_replies": [
             {"author_name": "User1", "author_handle": "user1", "text": "Nice!", "verified": False},
         ],
@@ -67,7 +83,9 @@ class TestTimezoneAwareness:
         resp = _make_xai_response(valid_response_data)
         parsed = parse_xai_response(resp)
         # This should NOT raise TypeError
-        assert (fallback.created_at < parsed.created_at) or (fallback.created_at >= parsed.created_at)
+        assert (fallback.created_at < parsed.created_at) or (
+            fallback.created_at >= parsed.created_at
+        )
 
     def test_z_suffix_parsed_as_utc(self):
         data = {"created_at": "2024-01-15T12:00:00Z"}
@@ -160,7 +178,11 @@ class TestMediaParsing:
         data = {
             "media": [
                 {"type": "image", "url": "https://img.x.com/1.jpg"},
-                {"type": "video", "url": "https://vid.x.com/1.mp4", "thumbnail_url": "https://t.jpg"},
+                {
+                    "type": "video",
+                    "url": "https://vid.x.com/1.mp4",
+                    "thumbnail_url": "https://t.jpg",
+                },
                 {"type": "gif", "url": "https://gif.x.com/1.gif", "alt_text": "Funny GIF"},
             ]
         }

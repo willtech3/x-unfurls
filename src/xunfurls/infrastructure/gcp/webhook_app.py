@@ -308,9 +308,7 @@ async def _handle_block_actions(payload: dict[str, Any]) -> None:
         await _handle_summarize_action(payload, action)
 
 
-async def _handle_summarize_action(
-    payload: dict[str, Any], action: dict[str, Any]
-) -> None:
+async def _handle_summarize_action(payload: dict[str, Any], action: dict[str, Any]) -> None:
     """Handle 'Summarize with Grok' button click.
 
     Enqueues a summarize job for the post identified by the button value.

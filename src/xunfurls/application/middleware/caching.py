@@ -9,7 +9,7 @@ import time
 from collections import OrderedDict
 
 from xunfurls.domain.entities import XPostSnapshot, XStatusRef
-from xunfurls.domain.repositories.x_repository import FetchMode
+from xunfurls.domain.repositories.x_repository import FetchMode, XRepository
 
 
 class CachingXRepository:
@@ -17,7 +17,7 @@ class CachingXRepository:
 
     def __init__(
         self,
-        inner: object,
+        inner: XRepository,
         ttl_seconds: int = 3600,
         max_size: int = 100,
     ) -> None:
@@ -26,9 +26,7 @@ class CachingXRepository:
         self._max_size = max_size
         self._cache: OrderedDict[str, tuple[float, XPostSnapshot]] = OrderedDict()
 
-    async def fetch_post_snapshot(
-        self, status_ref: XStatusRef, mode: FetchMode
-    ) -> XPostSnapshot:
+    async def fetch_post_snapshot(self, status_ref: XStatusRef, mode: FetchMode) -> XPostSnapshot:
         """Fetch with caching. SUMMARY_ONLY bypasses cache."""
         key = status_ref.status_id
 

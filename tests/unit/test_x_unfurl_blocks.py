@@ -128,17 +128,30 @@ def _make_snapshot(**kw: object) -> XPostSnapshot:
 
 
 def test_video_media_shows_thumbnail(builder: XUnfurlBlocksBuilder) -> None:
-    snap = _make_snapshot(media=[XMedia(type="video", url="https://x.co/v.mp4", thumbnail_url="https://x.co/thumb.jpg", alt_text="vid")])
+    snap = _make_snapshot(
+        media=[
+            XMedia(
+                type="video",
+                url="https://x.co/v.mp4",
+                thumbnail_url="https://x.co/thumb.jpg",
+                alt_text="vid",
+            )
+        ]
+    )
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     imgs = [b for b in blocks if b["type"] == "image"]
     assert len(imgs) == 1
     assert imgs[0]["image_url"] == "https://x.co/thumb.jpg"
-    texts = [e.get("text", "") for b in blocks if b["type"] == "context" for e in b.get("elements", [])]
+    texts = [
+        e.get("text", "") for b in blocks if b["type"] == "context" for e in b.get("elements", [])
+    ]
     assert any("Video" in t for t in texts)
 
 
 def test_video_falls_back_to_url_when_no_thumbnail(builder: XUnfurlBlocksBuilder) -> None:
-    snap = _make_snapshot(media=[XMedia(type="video", url="https://x.co/poster.jpg", thumbnail_url=None)])
+    snap = _make_snapshot(
+        media=[XMedia(type="video", url="https://x.co/poster.jpg", thumbnail_url=None)]
+    )
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     imgs = [b for b in blocks if b["type"] == "image"]
     assert imgs[0]["image_url"] == "https://x.co/poster.jpg"
@@ -153,11 +166,13 @@ def test_gif_media_rendered_as_image(builder: XUnfurlBlocksBuilder) -> None:
 
 
 def test_mixed_media_types_all_rendered(builder: XUnfurlBlocksBuilder) -> None:
-    snap = _make_snapshot(media=[
-        XMedia(type="image", url="https://x.co/i.jpg"),
-        XMedia(type="video", url="https://x.co/v.mp4", thumbnail_url="https://x.co/vt.jpg"),
-        XMedia(type="gif", url="https://x.co/g.gif"),
-    ])
+    snap = _make_snapshot(
+        media=[
+            XMedia(type="image", url="https://x.co/i.jpg"),
+            XMedia(type="video", url="https://x.co/v.mp4", thumbnail_url="https://x.co/vt.jpg"),
+            XMedia(type="gif", url="https://x.co/g.gif"),
+        ]
+    )
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     img_urls = [b["image_url"] for b in blocks if b["type"] == "image"]
     assert "https://x.co/i.jpg" in img_urls
@@ -258,8 +273,7 @@ def test_summarize_button_value_contains_canonical_url(builder: XUnfurlBlocksBui
     blocks = builder.build_unfurl_blocks(snap, url)
     actions_blocks = [b for b in blocks if b["type"] == "actions"]
     summarize_btn = [
-        btn for btn in actions_blocks[0]["elements"]
-        if btn["action_id"] == "x_unfurl_summarize"
+        btn for btn in actions_blocks[0]["elements"] if btn["action_id"] == "x_unfurl_summarize"
     ][0]
     assert summarize_btn["value"] == url
 
@@ -278,8 +292,7 @@ def test_recent_post_shows_relative_time(builder: XUnfurlBlocksBuilder) -> None:
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     author_block = blocks[0]
     author_text = [
-        e.get("text", "") for e in author_block["elements"]
-        if e.get("type") == "mrkdwn"
+        e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
     ][0]
     assert "ago" in author_text
 
@@ -291,8 +304,7 @@ def test_old_post_shows_absolute_date(builder: XUnfurlBlocksBuilder) -> None:
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     author_block = blocks[0]
     author_text = [
-        e.get("text", "") for e in author_block["elements"]
-        if e.get("type") == "mrkdwn"
+        e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
     ][0]
     assert "Jan 15, 2024" in author_text
 
@@ -306,7 +318,6 @@ def test_hours_ago_shown_correctly(builder: XUnfurlBlocksBuilder) -> None:
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     author_block = blocks[0]
     author_text = [
-        e.get("text", "") for e in author_block["elements"]
-        if e.get("type") == "mrkdwn"
+        e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
     ][0]
     assert "hours ago" in author_text

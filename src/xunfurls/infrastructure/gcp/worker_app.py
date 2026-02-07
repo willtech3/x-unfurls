@@ -107,9 +107,7 @@ async def process_pubsub_message(request: Request) -> dict[str, str]:
         job_dict = json.loads(job_data)
         job = XUnfurlJobDto(**job_dict)
     except Exception as e:
-        logger.error(
-            "Invalid message format, ACKing to prevent retry: %s", e, exc_info=True
-        )
+        logger.error("Invalid message format, ACKing to prevent retry: %s", e, exc_info=True)
         return {"status": "invalid_message", "messageId": message_id}
 
     # Set trace context
@@ -162,9 +160,7 @@ async def process_pubsub_message(request: Request) -> dict[str, str]:
 
     except _PERMANENT_ERRORS as e:
         duration_ms = (time.monotonic() - start_time) * 1000
-        record_job_processed(
-            action=job.action, status="permanent_error", duration_ms=duration_ms
-        )
+        record_job_processed(action=job.action, status="permanent_error", duration_ms=duration_ms)
         logger.error(
             "Permanent error processing job %s, ACKing message: %s",
             job.job_id,
@@ -175,15 +171,11 @@ async def process_pubsub_message(request: Request) -> dict[str, str]:
 
     except Exception as e:
         duration_ms = (time.monotonic() - start_time) * 1000
-        record_job_processed(
-            action=job.action, status="transient_error", duration_ms=duration_ms
-        )
+        record_job_processed(action=job.action, status="transient_error", duration_ms=duration_ms)
         logger.error(
             "Transient error processing job %s, NACKing for retry: %s",
             job.job_id,
             e,
             exc_info=True,
         )
-        raise HTTPException(
-            status_code=500, detail="Internal processing error"
-        ) from e
+        raise HTTPException(status_code=500, detail="Internal processing error") from e

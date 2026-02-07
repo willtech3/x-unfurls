@@ -33,11 +33,13 @@ class XUnfurlBlocksBuilder:
 
         author_elements: list[dict[str, Any]] = []
         if snapshot.author_avatar_url:
-            author_elements.append({
-                "type": "image",
-                "image_url": snapshot.author_avatar_url,
-                "alt_text": f"{snapshot.author_name} avatar",
-            })
+            author_elements.append(
+                {
+                    "type": "image",
+                    "image_url": snapshot.author_avatar_url,
+                    "alt_text": f"{snapshot.author_name} avatar",
+                }
+            )
         author_elements.append({"type": "mrkdwn", "text": author_text})
 
         blocks.append({"type": "context", "elements": author_elements})
@@ -49,27 +51,35 @@ class XUnfurlBlocksBuilder:
         # 3. Media: Images, videos, GIFs (up to 4)
         for media in snapshot.media[:4]:
             if media.type == "image":
-                blocks.append({
-                    "type": "image",
-                    "image_url": media.url,
-                    "alt_text": media.alt_text or "Image from X post",
-                })
+                blocks.append(
+                    {
+                        "type": "image",
+                        "image_url": media.url,
+                        "alt_text": media.alt_text or "Image from X post",
+                    }
+                )
             elif media.type == "video":
-                blocks.append({
-                    "type": "image",
-                    "image_url": media.thumbnail_url or media.url,
-                    "alt_text": media.alt_text or "Video from X post",
-                })
-                blocks.append({
-                    "type": "context",
-                    "elements": [{"type": "mrkdwn", "text": "▶️ *Video* — watch on X"}],
-                })
+                blocks.append(
+                    {
+                        "type": "image",
+                        "image_url": media.thumbnail_url or media.url,
+                        "alt_text": media.alt_text or "Video from X post",
+                    }
+                )
+                blocks.append(
+                    {
+                        "type": "context",
+                        "elements": [{"type": "mrkdwn", "text": "▶️ *Video* — watch on X"}],
+                    }
+                )
             elif media.type == "gif":
-                blocks.append({
-                    "type": "image",
-                    "image_url": media.url,
-                    "alt_text": media.alt_text or "GIF from X post",
-                })
+                blocks.append(
+                    {
+                        "type": "image",
+                        "image_url": media.url,
+                        "alt_text": media.alt_text or "GIF from X post",
+                    }
+                )
 
         # 4. Context: Metrics
         metrics = snapshot.metrics

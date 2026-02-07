@@ -54,9 +54,7 @@ def setup_observability(
             from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-            tracer_provider.add_span_processor(
-                BatchSpanProcessor(CloudTraceSpanExporter())
-            )
+            tracer_provider.add_span_processor(BatchSpanProcessor(CloudTraceSpanExporter()))
         except Exception:
             logger.warning("Could not initialize GCP trace exporter, using noop")
 
@@ -103,9 +101,7 @@ def get_meter() -> metrics.Meter:
     return _meter
 
 
-def record_request(
-    method: str, path: str, status_code: int, duration_ms: float
-) -> None:
+def record_request(method: str, path: str, status_code: int, duration_ms: float) -> None:
     """Record an HTTP request metric.
 
     Args:
@@ -114,16 +110,18 @@ def record_request(
         status_code: Response status code
         duration_ms: Request duration in milliseconds
     """
-    attrs = {"http.method": method, "http.route": path, "http.status_code": status_code}
+    attrs: dict[str, str | int] = {
+        "http.method": method,
+        "http.route": path,
+        "http.status_code": status_code,
+    }
     if _request_counter:
         _request_counter.add(1, attrs)
     if _request_duration:
         _request_duration.record(duration_ms, attrs)
 
 
-def record_job_processed(
-    action: str, status: str, duration_ms: float
-) -> None:
+def record_job_processed(action: str, status: str, duration_ms: float) -> None:
     """Record a job processing metric.
 
     Args:

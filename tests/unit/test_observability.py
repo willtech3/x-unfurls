@@ -60,12 +60,14 @@ class TestHealthCheckReady:
         class FakeXAI:
             async def fetch_post_snapshot(self, *a, **kw):  # noqa: ANN001, ANN002, ANN003
                 pass
+
             async def close(self) -> None:
                 pass
 
         class FakeSlack:
             async def unfurl_links(self, *a, **kw):  # noqa: ANN001, ANN002, ANN003
                 pass
+
             async def close(self) -> None:
                 pass
 

@@ -34,7 +34,9 @@ class TestBug2MissingHeaders:
 
     def test_empty_timestamp_returns_false(self) -> None:
         result = validate_slack_signature(
-            body=b"hello", timestamp="", signature="v0=abc",
+            body=b"hello",
+            timestamp="",
+            signature="v0=abc",
             signing_secret=SIGNING_SECRET,
         )
         assert result is False
@@ -42,21 +44,27 @@ class TestBug2MissingHeaders:
     def test_missing_signature_returns_false(self) -> None:
         ts = str(int(time.time()))
         result = validate_slack_signature(
-            body=b"hello", timestamp=ts, signature="",
+            body=b"hello",
+            timestamp=ts,
+            signature="",
             signing_secret=SIGNING_SECRET,
         )
         assert result is False
 
     def test_non_numeric_timestamp_returns_false(self) -> None:
         result = validate_slack_signature(
-            body=b"hello", timestamp="abc", signature="v0=abc",
+            body=b"hello",
+            timestamp="abc",
+            signature="v0=abc",
             signing_secret=SIGNING_SECRET,
         )
         assert result is False
 
     def test_none_timestamp_returns_false(self) -> None:
         result = validate_slack_signature(
-            body=b"hello", timestamp="None", signature="v0=abc",
+            body=b"hello",
+            timestamp="None",
+            signature="v0=abc",
             signing_secret=SIGNING_SECRET,
         )
         assert result is False
@@ -66,7 +74,9 @@ class TestBug2MissingHeaders:
         ts = str(int(time.time()))
         sig = _make_valid_signature(body, ts)
         result = validate_slack_signature(
-            body=body, timestamp=ts, signature=sig,
+            body=body,
+            timestamp=ts,
+            signature=sig,
             signing_secret=SIGNING_SECRET,
         )
         assert result is True
@@ -84,15 +94,11 @@ class TestBug5CanonicalizeUrl:
         assert result == "https://x.com/i/status/123456789"
 
     def test_canonicalize_url_preserves_username(self) -> None:
-        result = canonicalize_url(
-            "https://x.com/elonmusk/status/123456789", "123456789"
-        )
+        result = canonicalize_url("https://x.com/elonmusk/status/123456789", "123456789")
         assert result == "https://x.com/elonmusk/status/123456789"
 
     def test_canonicalize_url_with_i_prefix(self) -> None:
-        result = canonicalize_url(
-            "https://x.com/i/status/123456789", "123456789"
-        )
+        result = canonicalize_url("https://x.com/i/status/123456789", "123456789")
         assert result == "https://x.com/i/status/123456789"
 
 
@@ -101,10 +107,14 @@ class TestCQ1ActionEnum:
 
     def test_job_dto_with_valid_action(self) -> None:
         dto = XUnfurlJobDto(
-            job_id="j1", channel_id="C1", message_ts="1.1", team_id="T1",
+            job_id="j1",
+            channel_id="C1",
+            message_ts="1.1",
+            team_id="T1",
             original_url="https://x.com/u/status/1",
             canonical_url="https://x.com/u/status/1",
-            status_id="1", action="generate",
+            status_id="1",
+            action="generate",
         )
         assert dto.action == "generate"
 
@@ -119,8 +129,13 @@ class TestCQ1ActionEnum:
     def test_job_dto_all_valid_actions(self) -> None:
         for action in ("generate", "refresh", "summarize"):
             dto = XUnfurlJobDto(
-                job_id="j1", channel_id="C1", message_ts="1.1", team_id="T1",
-                original_url="u", canonical_url="u", status_id="1",
+                job_id="j1",
+                channel_id="C1",
+                message_ts="1.1",
+                team_id="T1",
+                original_url="u",
+                canonical_url="u",
+                status_id="1",
                 action=action,
             )
             assert dto.action == action
@@ -135,6 +150,7 @@ class TestCQ2RegexDomainSafety:
 
     def test_is_x_link_guards_before_extract(self) -> None:
         from xunfurls.infrastructure.gcp.webhook_app import is_x_link
+
         assert is_x_link("https://example.com/status/123") is False
         assert is_x_link("https://x.com/user/status/123") is True
 
@@ -180,6 +196,7 @@ class TestCQ4InteractiveEndpoint:
 
     def _get_client(self) -> TestClient:
         from xunfurls.infrastructure.gcp.webhook_app import app
+
         return TestClient(app)
 
     @patch.dict("os.environ", {"SLACK_SIGNING_SECRET": SIGNING_SECRET})

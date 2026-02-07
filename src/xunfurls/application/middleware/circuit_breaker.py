@@ -12,7 +12,7 @@ States:
 import time
 
 from xunfurls.domain.entities import XPostSnapshot, XStatusRef
-from xunfurls.domain.repositories.x_repository import FetchMode
+from xunfurls.domain.repositories.x_repository import FetchMode, XRepository
 
 
 class CircuitOpenError(RuntimeError):
@@ -24,7 +24,7 @@ class CircuitBreakerXRepository:
 
     def __init__(
         self,
-        inner: object,
+        inner: XRepository,
         failure_threshold: int = 5,
         recovery_timeout_seconds: float = 60.0,
     ) -> None:
@@ -35,9 +35,7 @@ class CircuitBreakerXRepository:
         self._last_failure_time: float = 0.0
         self._is_open = False
 
-    async def fetch_post_snapshot(
-        self, status_ref: XStatusRef, mode: FetchMode
-    ) -> XPostSnapshot:
+    async def fetch_post_snapshot(self, status_ref: XStatusRef, mode: FetchMode) -> XPostSnapshot:
         """Fetch with circuit breaker protection."""
         if self._is_open:
             if time.monotonic() - self._last_failure_time < self._recovery_timeout:

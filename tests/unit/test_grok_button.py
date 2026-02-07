@@ -18,9 +18,9 @@ SIGNING_SECRET = "test_signing_secret_for_grok_button"
 
 def _make_valid_signature(body: bytes, ts: str) -> str:
     basestring = f"v0:{ts}:{body.decode('utf-8')}"
-    return "v0=" + hmac.new(
-        SIGNING_SECRET.encode(), basestring.encode(), hashlib.sha256
-    ).hexdigest()
+    return (
+        "v0=" + hmac.new(SIGNING_SECRET.encode(), basestring.encode(), hashlib.sha256).hexdigest()
+    )
 
 
 def _make_interactive_payload(
@@ -129,9 +129,7 @@ class TestGrokButtonInteractive:
         set_job_queue(mock_queue)
 
         client = TestClient(app)
-        payload = _make_interactive_payload(
-            value="https://x.com/elonmusk/status/9876543210"
-        )
+        payload = _make_interactive_payload(value="https://x.com/elonmusk/status/9876543210")
         resp = _post_interactive(client, payload)
 
         assert resp.status_code == 200

@@ -121,9 +121,7 @@ class TestCircuitBreakerXRepository:
 
     @pytest.fixture
     def breaker(self, inner: AsyncMock) -> CircuitBreakerXRepository:
-        return CircuitBreakerXRepository(
-            inner, failure_threshold=3, recovery_timeout_seconds=1
-        )
+        return CircuitBreakerXRepository(inner, failure_threshold=3, recovery_timeout_seconds=1)
 
     async def test_passes_through_on_success(
         self, breaker: CircuitBreakerXRepository, inner: AsyncMock
@@ -143,9 +141,7 @@ class TestCircuitBreakerXRepository:
         with pytest.raises(CircuitOpenError):
             await breaker.fetch_post_snapshot(_make_ref(), FetchMode.RICH)
 
-    async def test_circuit_resets_after_recovery_timeout(
-        self, inner: AsyncMock
-    ) -> None:
+    async def test_circuit_resets_after_recovery_timeout(self, inner: AsyncMock) -> None:
         breaker = CircuitBreakerXRepository(
             inner, failure_threshold=2, recovery_timeout_seconds=0.1
         )

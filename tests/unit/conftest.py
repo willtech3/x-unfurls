@@ -46,9 +46,7 @@ class FakeXRepository:
     ) -> None:
         self.snapshots[(status_id, mode)] = snapshot
 
-    async def fetch_post_snapshot(
-        self, status_ref: XStatusRef, mode: FetchMode
-    ) -> XPostSnapshot:
+    async def fetch_post_snapshot(self, status_ref: XStatusRef, mode: FetchMode) -> XPostSnapshot:
         self.fetch_calls.append((status_ref, mode))
         key = (status_ref.status_id, mode)
         if key in self.snapshots:
@@ -64,7 +62,9 @@ class FakeXRepository:
         )
 
 
-assert isinstance(FakeXRepository(), XRepository), "FakeXRepository must satisfy XRepository Protocol"
+assert isinstance(FakeXRepository(), XRepository), (
+    "FakeXRepository must satisfy XRepository Protocol"
+)
 
 
 @dataclass
@@ -94,9 +94,9 @@ class FakeSlackUnfurlRepository:
             raise self.should_raise
 
 
-assert isinstance(
-    FakeSlackUnfurlRepository(), SlackUnfurlRepository
-), "FakeSlackUnfurlRepository must satisfy SlackUnfurlRepository Protocol"
+assert isinstance(FakeSlackUnfurlRepository(), SlackUnfurlRepository), (
+    "FakeSlackUnfurlRepository must satisfy SlackUnfurlRepository Protocol"
+)
 
 
 @dataclass
@@ -123,9 +123,9 @@ class FakeJobQueueProducer:
         return msg_id
 
 
-assert isinstance(
-    FakeJobQueueProducer(), JobQueueProducer
-), "FakeJobQueueProducer must satisfy JobQueueProducer Protocol"
+assert isinstance(FakeJobQueueProducer(), JobQueueProducer), (
+    "FakeJobQueueProducer must satisfy JobQueueProducer Protocol"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -164,8 +164,13 @@ def make_metrics() -> Callable[..., XMetrics]:
         bookmarks: int | None = 5,
     ) -> XMetrics:
         return XMetrics(
-            likes=likes, reposts=reposts, replies=replies, views=views, bookmarks=bookmarks,
+            likes=likes,
+            reposts=reposts,
+            replies=replies,
+            views=views,
+            bookmarks=bookmarks,
         )
+
     return _factory
 
 
@@ -179,6 +184,7 @@ def make_media() -> Callable[..., XMedia]:
         alt_text: str | None = "A test image",
     ) -> XMedia:
         return XMedia(type=type, url=url, thumbnail_url=thumbnail_url, alt_text=alt_text)
+
     return _factory
 
 
@@ -192,8 +198,12 @@ def make_reply() -> Callable[..., XReply]:
         verified: bool = False,
     ) -> XReply:
         return XReply(
-            author_name=author_name, author_handle=author_handle, text=text, verified=verified,
+            author_name=author_name,
+            author_handle=author_handle,
+            text=text,
+            verified=verified,
         )
+
     return _factory
 
 
@@ -212,6 +222,7 @@ def make_status_ref() -> Callable[..., XStatusRef]:
             status_id=status_id,
             author_handle_hint=author_handle_hint,
         )
+
     return _factory
 
 
@@ -246,6 +257,7 @@ def make_post_snapshot(
             top_replies=top_replies if top_replies is not None else [make_reply()],
             summary=summary,
         )
+
     return _factory
 
 
@@ -282,4 +294,5 @@ def make_job_dto() -> Callable[..., XUnfurlJobDto]:
             unfurl_id=unfurl_id,
             created_at=created_at,
         )
+
     return _factory

@@ -84,6 +84,7 @@ def _fake_clients():
 @pytest.fixture
 def client(_fake_clients):
     from xunfurls.infrastructure.gcp.worker_app import app
+
     with TestClient(app) as c:
         yield c
 
@@ -106,6 +107,7 @@ def fake_service(_fake_clients):
 class TestServiceLifecycle:
     def test_service_created_once_at_startup(self, client, fake_service):
         from xunfurls.infrastructure.gcp.worker_app import app
+
         assert app.state.unfurl_service is fake_service
 
     def test_clients_closed_on_shutdown(self):
@@ -117,7 +119,9 @@ class TestServiceLifecycle:
 
         xai = FakeXAIClient()
         slack = FakeSlackClient()
-        service = XUnfurlService(x_repo=xai, slack_repo=slack, blocks_builder=XUnfurlBlocksBuilder())
+        service = XUnfurlService(
+            x_repo=xai, slack_repo=slack, blocks_builder=XUnfurlBlocksBuilder()
+        )
 
         @asynccontextmanager
         async def _managed():
@@ -127,8 +131,11 @@ class TestServiceLifecycle:
                 await xai.close()
                 await slack.close()
 
-        with _patch("xunfurls.infrastructure.gcp.worker_app.create_managed_unfurl_service", _managed):
+        with _patch(
+            "xunfurls.infrastructure.gcp.worker_app.create_managed_unfurl_service", _managed
+        ):
             from xunfurls.infrastructure.gcp.worker_app import app
+
             with TestClient(app):
                 assert xai.close_calls == 0
                 assert slack.close_calls == 0
@@ -144,13 +151,17 @@ class TestErrorClassification:
         assert resp.status_code == 200
 
     def test_transient_error_returns_500(self, client, fake_service):
-        fake_service.process_unfurl_job = AsyncMock(side_effect=ConnectionError("connection refused"))
+        fake_service.process_unfurl_job = AsyncMock(
+            side_effect=ConnectionError("connection refused")
+        )
         envelope = _make_pubsub_envelope(_valid_job_dict())
         resp = client.post("/pubsub", json=envelope)
         assert resp.status_code == 500
 
     def test_timeout_error_returns_500(self, client, fake_service):
-        fake_service.process_unfurl_job = AsyncMock(side_effect=httpx.TimeoutException("read timeout"))
+        fake_service.process_unfurl_job = AsyncMock(
+            side_effect=httpx.TimeoutException("read timeout")
+        )
         envelope = _make_pubsub_envelope(_valid_job_dict())
         resp = client.post("/pubsub", json=envelope)
         assert resp.status_code == 500
@@ -158,7 +169,11 @@ class TestErrorClassification:
     def test_json_decode_error_is_permanent(self, client):
         raw_data = base64.b64encode(b"not-valid-json{{{").decode()
         envelope = {
-            "message": {"data": raw_data, "messageId": "bad-json-msg", "publishTime": "2024-01-01T00:00:00Z"},
+            "message": {
+                "data": raw_data,
+                "messageId": "bad-json-msg",
+                "publishTime": "2024-01-01T00:00:00Z",
+            },
             "subscription": "projects/test/subscriptions/test",
         }
         resp = client.post("/pubsub", json=envelope)
@@ -174,7 +189,11 @@ class TestErrorClassification:
 class TestPoisonPillMessages:
     def test_invalid_base64_returns_200(self, client):
         envelope = {
-            "message": {"data": "!!!not-base64!!!", "messageId": "poison-1", "publishTime": "2024-01-01T00:00:00Z"},
+            "message": {
+                "data": "!!!not-base64!!!",
+                "messageId": "poison-1",
+                "publishTime": "2024-01-01T00:00:00Z",
+            },
             "subscription": "projects/test/subscriptions/test",
         }
         resp = client.post("/pubsub", json=envelope)
@@ -183,7 +202,11 @@ class TestPoisonPillMessages:
     def test_invalid_json_after_decode_returns_200(self, client):
         raw_data = base64.b64encode(b"not json at all").decode()
         envelope = {
-            "message": {"data": raw_data, "messageId": "poison-2", "publishTime": "2024-01-01T00:00:00Z"},
+            "message": {
+                "data": raw_data,
+                "messageId": "poison-2",
+                "publishTime": "2024-01-01T00:00:00Z",
+            },
             "subscription": "projects/test/subscriptions/test",
         }
         resp = client.post("/pubsub", json=envelope)
