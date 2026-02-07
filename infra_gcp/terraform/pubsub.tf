@@ -27,7 +27,7 @@ resource "google_pubsub_subscription" "jobs_push" {
   topic = google_pubsub_topic.jobs.id
 
   push_config {
-    push_endpoint = "https://${google_cloud_run_v2_service.worker.name}-${data.google_project.this.number}.${var.region}.run.app/pubsub"
+    push_endpoint = "${google_cloud_run_v2_service.worker.uri}/pubsub"
 
     oidc_token {
       service_account_email = google_service_account.pubsub_push_invoker.email
