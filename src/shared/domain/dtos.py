@@ -1,6 +1,10 @@
 """Data Transfer Objects for X unfurl jobs."""
 
 from dataclasses import dataclass
+from typing import Literal
+
+# CQ-1: Constrained action type instead of bare str
+ActionType = Literal["generate", "refresh", "summarize"]
 
 
 @dataclass
@@ -14,7 +18,7 @@ class XUnfurlJobDto:
     original_url: str
     canonical_url: str
     status_id: str
-    action: str  # "generate" | "refresh" | "summarize"
+    action: ActionType
     trace_id: str = ""
     unfurl_id: str | None = None
     created_at: str = ""

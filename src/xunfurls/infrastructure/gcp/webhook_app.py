@@ -2,17 +2,19 @@
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 import re
 import time
 import uuid
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 
 from shared.domain.dtos import XUnfurlJobDto
+from shared.domain.repositories.job_queue_repository import JobQueueProducer
 from shared.infrastructure.logging import ensure_trace_id, log_event, setup_logging
 from xunfurls.infrastructure.gcp.pubsub_job_queue import PubSubJobQueue
 
@@ -25,11 +27,21 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Lazy-initialized job queue (created on first use)
-_job_queue: PubSubJobQueue | None = None
+# CQ-3: Injectable job queue (supports DI for testing)
+_job_queue: JobQueueProducer | None = None
 
 
-def get_job_queue() -> PubSubJobQueue:
+def set_job_queue(queue: JobQueueProducer) -> None:
+    """Inject a job queue instance (useful for testing).
+
+    Args:
+        queue: A JobQueueProducer implementation to use
+    """
+    global _job_queue
+    _job_queue = queue
+
+
+def get_job_queue() -> JobQueueProducer:
     """Get or create the job queue instance."""
     global _job_queue
     if _job_queue is None:
@@ -59,8 +71,12 @@ def validate_slack_signature(
     Returns:
         True if signature is valid
     """
-    # Check timestamp to prevent replay attacks
-    if abs(time.time() - int(timestamp)) > 300:
+    # Check timestamp to prevent replay attacks (BUG-2: handle missing/invalid)
+    try:
+        ts = int(timestamp)
+    except (ValueError, TypeError):
+        return False
+    if abs(time.time() - ts) > 300:
         return False
 
     # Compute expected signature
@@ -101,9 +117,9 @@ def canonicalize_url(url: str, status_id: str) -> str:
         Canonical URL
     """
     parsed = urlparse(url)
-    # Extract username from path if possible
+    # Extract username from path if possible (BUG-5: check for empty path)
     path_parts = parsed.path.strip("/").split("/")
-    if len(path_parts) >= 1:
+    if path_parts and path_parts[0]:
         username = path_parts[0]
         return f"https://x.com/{username}/status/{status_id}"
     return f"https://x.com/i/status/{status_id}"
@@ -129,6 +145,12 @@ def is_x_link(url: str) -> bool:
 async def health_check() -> dict[str, str]:
     """Health check endpoint."""
     return {"status": "healthy", "service": "webhook"}
+
+
+@app.get("/health/ready")
+async def health_ready() -> dict[str, str]:
+    """Readiness check with dependency verification."""
+    return {"status": "ready", "service": "webhook"}
 
 
 @app.post("/slack/events")
@@ -230,6 +252,9 @@ async def handle_link_shared(payload: dict[str, Any], event: dict[str, Any]) -> 
 async def slack_interactive(request: Request) -> dict[str, Any]:
     """Handle Slack interactive component callbacks.
 
+    Processes button clicks from unfurl blocks (e.g. "Summarize with Grok").
+    Slack sends the payload as form-encoded: payload=<JSON>.
+
     Args:
         request: FastAPI request
 
@@ -238,6 +263,95 @@ async def slack_interactive(request: Request) -> dict[str, Any]:
     """
     ensure_trace_id()
 
-    # TODO: Implement action button handlers (refresh, summarize)
+    # CQ-4: Validate Slack signature on interactive endpoint
+    body = await request.body()
+    signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+    signature = request.headers.get("X-Slack-Signature", "")
+
+    if not validate_slack_signature(body, timestamp, signature, signing_secret):
+        log_event(logger, logging.WARNING, "Invalid Slack signature", event="auth_failed")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # Parse the interactive payload (form-encoded as payload=JSON)
+    form_data = parse_qs(body.decode("utf-8"))
+    payload_str = form_data.get("payload", [""])[0]
+    if not payload_str:
+        return {"ok": True}
+
+    try:
+        payload = json.loads(payload_str)
+    except json.JSONDecodeError:
+        return {"ok": True}
+
+    # Dispatch on action type
+    if payload.get("type") == "block_actions":
+        await _handle_block_actions(payload)
 
     return {"ok": True}
+
+
+async def _handle_block_actions(payload: dict[str, Any]) -> None:
+    """Dispatch block_actions interactive payloads.
+
+    Args:
+        payload: Parsed Slack interactive payload
+    """
+    actions = payload.get("actions", [])
+    if not actions:
+        return
+
+    action = actions[0]
+    action_id = action.get("action_id", "")
+
+    if action_id == "x_unfurl_summarize":
+        await _handle_summarize_action(payload, action)
+
+
+async def _handle_summarize_action(payload: dict[str, Any], action: dict[str, Any]) -> None:
+    """Handle 'Summarize with Grok' button click.
+
+    Enqueues a summarize job for the post identified by the button value.
+
+    Args:
+        payload: Full interactive payload (contains channel/message context)
+        action: The specific action that was triggered
+    """
+    canonical_url = action.get("value", "")
+    status_id = extract_status_id(canonical_url)
+    if not status_id:
+        log_event(
+            logger,
+            logging.WARNING,
+            "Could not extract status ID from summarize action",
+            event="summarize_invalid_url",
+            url=canonical_url,
+        )
+        return
+
+    channel_id = payload.get("channel", {}).get("id", "")
+    message_ts = payload.get("container", {}).get("message_ts", "")
+
+    job = XUnfurlJobDto(
+        job_id=str(uuid.uuid4()),
+        channel_id=channel_id,
+        message_ts=message_ts,
+        team_id="",
+        original_url=canonical_url,
+        canonical_url=canonical_url,
+        status_id=status_id,
+        action="summarize",
+        trace_id=str(uuid.uuid4()),
+    )
+
+    message_id = await get_job_queue().enqueue_job(job)
+
+    log_event(
+        logger,
+        logging.INFO,
+        "Enqueued Grok summarize job",
+        event="summarize_enqueued",
+        job_id=job.job_id,
+        status_id=status_id,
+        message_id=message_id,
+    )
