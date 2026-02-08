@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
 
 from shared.domain.dtos import XUnfurlJobDto
 from shared.domain.repositories.job_queue_repository import JobQueueProducer
@@ -349,7 +350,7 @@ async def handle_message(payload: dict[str, Any], event: dict[str, Any]) -> None
 
 
 @app.post("/slack/interactive")
-async def slack_interactive(request: Request) -> dict[str, Any]:
+async def slack_interactive(request: Request) -> Response:
     """Handle Slack interactive component callbacks.
 
     Processes button clicks and modal submissions.
@@ -377,12 +378,12 @@ async def slack_interactive(request: Request) -> dict[str, Any]:
     form_data = parse_qs(body.decode("utf-8"))
     payload_str = form_data.get("payload", [""])[0]
     if not payload_str:
-        return {"ok": True}
+        return JSONResponse({"ok": True})
 
     try:
         payload = json.loads(payload_str)
     except json.JSONDecodeError:
-        return {"ok": True}
+        return JSONResponse({"ok": True})
 
     # Dispatch on payload type
     payload_type = payload.get("type")
@@ -390,8 +391,10 @@ async def slack_interactive(request: Request) -> dict[str, Any]:
         await _handle_block_actions(payload)
     elif payload_type == "view_submission":
         await _handle_view_submission(payload)
+        # Slack expects empty 200 for view_submission (close modal)
+        return Response(status_code=200)
 
-    return {"ok": True}
+    return JSONResponse({"ok": True})
 
 
 async def _handle_block_actions(payload: dict[str, Any]) -> None:

@@ -35,24 +35,10 @@ class XUnfurlBlocksBuilder:
         """
         blocks: list[dict[str, Any]] = []
 
-        # ── 1. Header ──────────────────────────────────────────────────
-        header_text = f"𝕏  {snapshot.author_name}"
-        if snapshot.verified:
-            header_text += "  ✓"
-        blocks.append(
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": self._truncate(header_text, 150),
-                    "emoji": True,
-                },
-            }
-        )
-
-        # ── 2. Author context: avatar + handle + timestamp ────────────
+        # ── 1. Author line: avatar + name + badge + handle + time ────
         handle = self._clean_handle(snapshot.author_handle)
         time_str = self._format_timestamp(snapshot.created_at)
+        badge = " ✓" if snapshot.verified else ""
 
         author_elements: list[dict[str, Any]] = []
         if self._is_valid_url(snapshot.author_avatar_url):
@@ -63,15 +49,20 @@ class XUnfurlBlocksBuilder:
                     "alt_text": f"{snapshot.author_name} avatar",
                 }
             )
-        author_elements.append({"type": "mrkdwn", "text": f"@{handle}  ·  {time_str}"})
+        author_elements.append(
+            {
+                "type": "mrkdwn",
+                "text": f"*{snapshot.author_name}*{badge}  @{handle}  ·  {time_str}",
+            }
+        )
         blocks.append({"type": "context", "elements": author_elements})
 
-        # ── 3. Post text ──────────────────────────────────────────────
+        # ── 2. Post text ─────────────────────────────────────────────
         sanitized_text = self._sanitize_text(snapshot.text)
         if sanitized_text.strip():
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": sanitized_text}})
 
-        # ── 4. Media ──────────────────────────────────────────────────
+        # ── 3. Media ─────────────────────────────────────────────────
         for media in snapshot.media[:4]:
             if media.type == "image" and self._is_valid_url(media.url):
                 blocks.append(
@@ -94,7 +85,7 @@ class XUnfurlBlocksBuilder:
                 blocks.append(
                     {
                         "type": "context",
-                        "elements": [{"type": "mrkdwn", "text": "▶️  *Video* — watch on X"}],
+                        "elements": [{"type": "mrkdwn", "text": "▸ *Video* — tap to watch on X"}],
                     }
                 )
             elif media.type == "gif" and self._is_valid_url(media.url):
@@ -106,12 +97,14 @@ class XUnfurlBlocksBuilder:
                     }
                 )
 
-        # ── 5. Metrics (2-column field grid) ──────────────────────────
-        metrics_fields = self._build_metrics_fields(snapshot.metrics)
-        if metrics_fields:
-            blocks.append({"type": "section", "fields": metrics_fields})
+        # ── 4. Metrics (compact single-line) ─────────────────────────
+        metrics_line = self._build_metrics_line(snapshot.metrics)
+        if metrics_line:
+            blocks.append(
+                {"type": "context", "elements": [{"type": "mrkdwn", "text": metrics_line}]}
+            )
 
-        # ── 6. Top replies ────────────────────────────────────────────
+        # ── 5. Top replies ───────────────────────────────────────────
         valid_replies = snapshot.top_replies[:3]
         if valid_replies:
             blocks.append({"type": "divider"})
@@ -126,15 +119,14 @@ class XUnfurlBlocksBuilder:
                             {
                                 "type": "mrkdwn",
                                 "text": (
-                                    f"💬  *{reply.author_name}*{badge}"
-                                    f"  @{reply_handle}\n{reply_text}"
+                                    f"*{reply.author_name}*{badge}  @{reply_handle}\n› {reply_text}"
                                 ),
                             }
                         ],
                     }
                 )
 
-        # ── 7. Grok summary ──────────────────────────────────────────
+        # ── 6. Grok summary ─────────────────────────────────────────
         if snapshot.summary:
             blocks.append({"type": "divider"})
             blocks.append(
@@ -147,7 +139,7 @@ class XUnfurlBlocksBuilder:
                 }
             )
 
-        # ── 8. Actions ────────────────────────────────────────────────
+        # ── 7. Actions ───────────────────────────────────────────────
         action_elements: list[dict[str, Any]] = [
             {
                 "type": "button",
@@ -171,12 +163,12 @@ class XUnfurlBlocksBuilder:
             )
         blocks.append({"type": "actions", "elements": action_elements})
 
-        # ── 9. Footer ─────────────────────────────────────────────────
+        # ── 8. Footer ────────────────────────────────────────────────
         blocks.append(
             {
                 "type": "context",
                 "elements": [
-                    {"type": "mrkdwn", "text": "Powered by Grok  ·  x.ai"},
+                    {"type": "mrkdwn", "text": "✦ Powered by Grok  ·  x.ai"},
                 ],
             }
         )
@@ -185,30 +177,22 @@ class XUnfurlBlocksBuilder:
 
     # ── Helpers ────────────────────────────────────────────────────────
 
-    def _build_metrics_fields(self, metrics: XMetrics) -> list[dict[str, Any]]:
-        """Build section fields for a 2-column metrics grid.
+    def _build_metrics_line(self, metrics: XMetrics) -> str:
+        """Build a compact single-line metrics string.
 
-        Returns an empty list when all metrics are zero/None so the
-        caller can skip the section block entirely.
+        Returns an empty string when all metrics are zero/None so the
+        caller can skip the block entirely.
         """
-        fields: list[dict[str, Any]] = []
+        parts: list[str] = []
         if metrics.likes:
-            fields.append(
-                {"type": "mrkdwn", "text": f"❤️  *{self._format_number(metrics.likes)}*\nLikes"}
-            )
+            parts.append(f"♡ *{self._format_number(metrics.likes)}*")
         if metrics.reposts:
-            fields.append(
-                {"type": "mrkdwn", "text": f"🔄  *{self._format_number(metrics.reposts)}*\nReposts"}
-            )
+            parts.append(f"↻ *{self._format_number(metrics.reposts)}*")
         if metrics.replies:
-            fields.append(
-                {"type": "mrkdwn", "text": f"💬  *{self._format_number(metrics.replies)}*\nReplies"}
-            )
+            parts.append(f"↩ *{self._format_number(metrics.replies)}*")
         if metrics.views:
-            fields.append(
-                {"type": "mrkdwn", "text": f"👁️  *{self._format_number(metrics.views)}*\nViews"}
-            )
-        return fields
+            parts.append(f"◎ *{self._format_number(metrics.views)}*")
+        return "    ".join(parts)
 
     _VIDEO_EXTENSIONS = (".mp4", ".m3u8", ".webm", ".mov", ".avi")
 
@@ -229,42 +213,20 @@ class XUnfurlBlocksBuilder:
         return handle.lstrip("@")
 
     def _sanitize_text(self, text: str) -> str:
-        """Sanitize text to prevent Slack mention spam.
-
-        Args:
-            text: Raw text from X post
-
-        Returns:
-            Sanitized text safe for Slack
-        """
+        """Sanitize text to prevent Slack mention spam."""
         text = text.replace("@channel", "@\u200bchannel")
         text = text.replace("@here", "@\u200bhere")
         text = text.replace("@everyone", "@\u200beveryone")
         return self._truncate(text, 3000)
 
     def _truncate(self, text: str, max_length: int) -> str:
-        """Truncate text with ellipsis.
-
-        Args:
-            text: Text to truncate
-            max_length: Maximum length
-
-        Returns:
-            Truncated text
-        """
+        """Truncate text with ellipsis."""
         if len(text) <= max_length:
             return text
         return text[: max_length - 3] + "..."
 
     def _format_timestamp(self, dt: datetime) -> str:
-        """Format timestamp as relative for recent posts, absolute for older.
-
-        Args:
-            dt: Datetime to format
-
-        Returns:
-            Formatted time string
-        """
+        """Format timestamp as relative for recent posts, absolute for older."""
         now = datetime.now(UTC)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
@@ -277,24 +239,17 @@ class XUnfurlBlocksBuilder:
             return "just now"
         if seconds < 3600:
             minutes = seconds // 60
-            return f"{minutes} {'minute' if minutes == 1 else 'minutes'} ago"
+            return f"{minutes}m ago"
         if seconds < 86400:
             hours = seconds // 3600
-            return f"{hours} {'hour' if hours == 1 else 'hours'} ago"
+            return f"{hours}h ago"
         if seconds < 604800:  # 7 days
             days = seconds // 86400
-            return f"{days} {'day' if days == 1 else 'days'} ago"
+            return f"{days}d ago"
         return dt.strftime("%b %d, %Y")
 
     def _format_number(self, n: int) -> str:
-        """Format large numbers (e.g., 1.2K, 3.4M).
-
-        Args:
-            n: Number to format
-
-        Returns:
-            Formatted number string
-        """
+        """Format large numbers (e.g., 1.2K, 3.4M)."""
         if n >= 1_000_000:
             return f"{n / 1_000_000:.1f}M"
         if n >= 1_000:
