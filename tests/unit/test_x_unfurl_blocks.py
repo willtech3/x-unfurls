@@ -235,13 +235,20 @@ def test_video_media_shows_thumbnail(builder: XUnfurlBlocksBuilder) -> None:
     assert any("Video" in t for t in texts)
 
 
-def test_video_falls_back_to_url_when_no_thumbnail(builder: XUnfurlBlocksBuilder) -> None:
+def test_video_without_thumbnail_skips_image_block(builder: XUnfurlBlocksBuilder) -> None:
     snap = _make_snapshot(
-        media=[XMedia(type="video", url="https://x.co/poster.jpg", thumbnail_url=None)]
+        media=[XMedia(type="video", url="https://x.co/video.mp4", thumbnail_url=None)]
     )
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     imgs = [b for b in blocks if b["type"] == "image"]
-    assert imgs[0]["image_url"] == "https://x.co/poster.jpg"
+    assert len(imgs) == 0
+    ctx = [
+        b
+        for b in blocks
+        if b["type"] == "context"
+        and any("Video" in e.get("text", "") for e in b.get("elements", []))
+    ]
+    assert len(ctx) == 1
 
 
 def test_gif_media_rendered_as_image(builder: XUnfurlBlocksBuilder) -> None:

@@ -82,8 +82,8 @@ class XUnfurlBlocksBuilder:
                     }
                 )
             elif media.type == "video":
-                thumb = media.thumbnail_url or media.url
-                if self._is_valid_url(thumb):
+                thumb = media.thumbnail_url
+                if self._is_valid_image_url(thumb):
                     blocks.append(
                         {
                             "type": "image",
@@ -91,12 +91,12 @@ class XUnfurlBlocksBuilder:
                             "alt_text": media.alt_text or "Video thumbnail",
                         }
                     )
-                    blocks.append(
-                        {
-                            "type": "context",
-                            "elements": [{"type": "mrkdwn", "text": "▶️  *Video* — watch on X"}],
-                        }
-                    )
+                blocks.append(
+                    {
+                        "type": "context",
+                        "elements": [{"type": "mrkdwn", "text": "▶️  *Video* — watch on X"}],
+                    }
+                )
             elif media.type == "gif" and self._is_valid_url(media.url):
                 blocks.append(
                     {
@@ -210,9 +210,19 @@ class XUnfurlBlocksBuilder:
             )
         return fields
 
+    _VIDEO_EXTENSIONS = (".mp4", ".m3u8", ".webm", ".mov", ".avi")
+
     def _is_valid_url(self, url: str | None) -> bool:
         """Check if a URL is non-empty and uses http(s)."""
         return url is not None and url.startswith(("http://", "https://"))
+
+    def _is_valid_image_url(self, url: str | None) -> bool:
+        """Check if a URL is valid and points to an image (not a video)."""
+        if not self._is_valid_url(url):
+            return False
+        assert url is not None  # narrowed by _is_valid_url
+        path = url.split("?")[0].lower()
+        return not path.endswith(self._VIDEO_EXTENSIONS)
 
     def _clean_handle(self, handle: str) -> str:
         """Strip leading @ from handle if xAI included it."""
