@@ -128,9 +128,9 @@ def test_footer_present(builder: XUnfurlBlocksBuilder) -> None:
     assert "Powered by Grok" in footer["elements"][0]["text"]
 
 
-def test_accent_color_constant_still_defined(builder: XUnfurlBlocksBuilder) -> None:
-    """ACCENT_COLOR is still defined (unused but kept for reference)."""
-    assert hasattr(builder, "ACCENT_COLOR")
+def test_accent_color_constant(builder: XUnfurlBlocksBuilder) -> None:
+    """Builder should expose ACCENT_COLOR for the attachment bar."""
+    assert builder.ACCENT_COLOR == "#1D9BF0"
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +203,7 @@ def test_metrics_rendered_as_compact_line(builder: XUnfurlBlocksBuilder) -> None
     text = metrics_blocks[0]["elements"][0]["text"]
     assert "💚" in text
     assert "🔁" in text
-    assert "🗨️" in text
+    assert "💬" in text
     assert "👁️" in text
     # No text labels
     assert "Likes" not in text
@@ -526,7 +526,7 @@ def test_metrics_order_replies_first(builder: XUnfurlBlocksBuilder) -> None:
         if b["type"] == "context" and any("💚" in e.get("text", "") for e in b.get("elements", []))
     ]
     text = metrics_blocks[0]["elements"][0]["text"]
-    assert text.index("🗨️") < text.index("🔁") < text.index("💚") < text.index("👁️")
+    assert text.index("💬") < text.index("🔁") < text.index("💚") < text.index("👁️")
 
 
 # ---------------------------------------------------------------------------

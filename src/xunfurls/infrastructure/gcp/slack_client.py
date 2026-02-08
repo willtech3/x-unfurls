@@ -87,14 +87,19 @@ class SlackHttpClient(SlackUnfurlRepository):
         blocks: list[dict[str, Any]],
         text: str = "",
         thread_ts: str = "",
+        color: str = "",
     ) -> str:
         """Post a message with blocks to a channel using chat.postMessage.
+
+        When ``color`` is provided, blocks are wrapped inside a Slack
+        attachment with a colored left-bar accent.
 
         Args:
             channel_id: Channel to post to
             blocks: Slack Block Kit blocks
             text: Fallback text for notifications
             thread_ts: If set, posts as a threaded reply to this message
+            color: Hex color for attachment left-bar (e.g. "#1D9BF0")
 
         Returns:
             The message timestamp (ts) of the posted message
@@ -104,8 +109,11 @@ class SlackHttpClient(SlackUnfurlRepository):
             "text": text or "X post preview",
             "unfurl_links": False,
             "unfurl_media": False,
-            "blocks": blocks,
         }
+        if color:
+            payload["attachments"] = [{"color": color, "blocks": blocks}]
+        else:
+            payload["blocks"] = blocks
         if thread_ts:
             payload["thread_ts"] = thread_ts
 

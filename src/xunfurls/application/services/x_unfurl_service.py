@@ -52,6 +52,7 @@ class XUnfurlService:
             channel_id=job.channel_id,
             blocks=blocks,
             text=f"X post by @{snapshot.author_handle.lstrip('@')}",
+            color=self._blocks_builder.ACCENT_COLOR,
         )
 
     async def _process_ask_grok(self, job: XUnfurlJobDto, status_ref: XStatusRef) -> None:

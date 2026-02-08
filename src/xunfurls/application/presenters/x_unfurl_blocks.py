@@ -203,7 +203,7 @@ class XUnfurlBlocksBuilder:
         """
         parts: list[str] = []
         if metrics.replies:
-            parts.append(f"🗨️ *{self._format_number(metrics.replies)}*")
+            parts.append(f"💬 *{self._format_number(metrics.replies)}*")
         if metrics.reposts:
             parts.append(f"🔁 *{self._format_number(metrics.reposts)}*")
         if metrics.likes:
