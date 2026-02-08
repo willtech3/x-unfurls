@@ -1,12 +1,21 @@
 """Orchestration service for X unfurl generation."""
 
-from typing import Any
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import TYPE_CHECKING, Any
 
 from shared.domain.dtos import XUnfurlJobDto
 from shared.domain.repositories.slack_repository import SlackUnfurlRepository
 from xunfurls.application.presenters.x_unfurl_blocks import XUnfurlBlocksBuilder
-from xunfurls.domain.entities import XStatusRef
+from xunfurls.domain.entities import XPostSnapshot, XStatusRef
 from xunfurls.domain.repositories.x_repository import FetchMode, XRepository
+
+if TYPE_CHECKING:
+    from xunfurls.infrastructure.fxtwitter_client import FxTwitterClient
+
+logger = logging.getLogger(__name__)
 
 
 class XUnfurlService:
@@ -17,10 +26,12 @@ class XUnfurlService:
         x_repo: XRepository,
         slack_repo: SlackUnfurlRepository,
         blocks_builder: XUnfurlBlocksBuilder,
+        thumbnail_client: FxTwitterClient | None = None,
     ) -> None:
         self._x_repo = x_repo
         self._slack_repo = slack_repo
         self._blocks_builder = blocks_builder
+        self._thumbnail_client = thumbnail_client
 
     async def process_unfurl_job(self, job: XUnfurlJobDto) -> None:
         """Process an unfurl job.
@@ -45,7 +56,15 @@ class XUnfurlService:
         if job.action == "summarize":
             mode = FetchMode.SUMMARY_ONLY
 
-        snapshot = await self._x_repo.fetch_post_snapshot(status_ref, mode)
+        if self._thumbnail_client is not None:
+            snapshot, thumbnails = await asyncio.gather(
+                self._x_repo.fetch_post_snapshot(status_ref, mode),
+                self._thumbnail_client.fetch_video_thumbnails(job.canonical_url),
+            )
+            _apply_video_thumbnails(snapshot, thumbnails)
+        else:
+            snapshot = await self._x_repo.fetch_post_snapshot(status_ref, mode)
+
         blocks = self._blocks_builder.build_unfurl_blocks(snapshot, job.canonical_url)
 
         await self._slack_repo.post_message(
@@ -102,3 +121,23 @@ class XUnfurlService:
             },
         ]
         return blocks
+
+
+def _apply_video_thumbnails(snapshot: XPostSnapshot, thumbnails: list[str]) -> None:
+    """Overwrite video media thumbnail URLs with FxTwitter results.
+
+    Matches thumbnails to video media items by position. Only overwrites
+    if FxTwitter returned a non-empty list.
+    """
+    if not thumbnails:
+        return
+
+    video_indices = [i for i, m in enumerate(snapshot.media) if m.type in ("video", "gif")]
+    for idx, thumb_url in zip(video_indices, thumbnails, strict=False):
+        logger.debug(
+            "Replacing video thumbnail [%d]: %s -> %s",
+            idx,
+            snapshot.media[idx].thumbnail_url,
+            thumb_url,
+        )
+        snapshot.media[idx].thumbnail_url = thumb_url

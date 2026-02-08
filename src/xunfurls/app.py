@@ -8,6 +8,7 @@ from xunfurls.application.middleware.caching import CachingXRepository
 from xunfurls.application.middleware.circuit_breaker import CircuitBreakerXRepository
 from xunfurls.application.presenters.x_unfurl_blocks import XUnfurlBlocksBuilder
 from xunfurls.application.services.x_unfurl_service import XUnfurlService
+from xunfurls.infrastructure.fxtwitter_client import FxTwitterClient
 from xunfurls.infrastructure.gcp.slack_client import SlackHttpClient
 from xunfurls.infrastructure.gcp.xai_client import XAIClient
 
@@ -29,6 +30,7 @@ async def create_managed_unfurl_service() -> AsyncIterator[XUnfurlService]:
     """
     xai_client = XAIClient()
     slack_client = SlackHttpClient()
+    fxtwitter_client = FxTwitterClient()
     blocks_builder = XUnfurlBlocksBuilder()
 
     # Compose middleware: circuit breaker wraps xAI, cache wraps that
@@ -39,10 +41,15 @@ async def create_managed_unfurl_service() -> AsyncIterator[XUnfurlService]:
 
     try:
         service = XUnfurlService(
-            x_repo=cached, slack_repo=slack_client, blocks_builder=blocks_builder
+            x_repo=cached,
+            slack_repo=slack_client,
+            blocks_builder=blocks_builder,
+            thumbnail_client=fxtwitter_client,
         )
         yield service
     finally:
+        await fxtwitter_client.close()
+        logger.info("FxTwitter client closed")
         await xai_client.close()
         logger.info("XAI client closed")
         await slack_client.close()
