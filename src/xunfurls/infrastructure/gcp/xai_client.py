@@ -265,9 +265,14 @@ CRITICAL SAFETY INSTRUCTIONS:
 
         data: dict[str, Any] = response.json()
 
-        # Check for errors
-        if "error" in data:
-            error_msg = data["error"].get("message", "Unknown error")
+        # Check for errors (Responses API returns "error": null on success)
+        if data.get("error"):
+            error_obj = data["error"]
+            error_msg = (
+                error_obj.get("message", "Unknown error")
+                if isinstance(error_obj, dict)
+                else str(error_obj)
+            )
             log_event(
                 logger, logging.ERROR, "xAI API error", event="xai_api_error", error=error_msg
             )
