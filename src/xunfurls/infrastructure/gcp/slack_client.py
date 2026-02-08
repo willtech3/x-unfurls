@@ -1,5 +1,6 @@
 """Slack API client implementation."""
 
+import json
 import logging
 import os
 from typing import Any
@@ -113,6 +114,7 @@ class SlackHttpClient(SlackUnfurlRepository):
         data = response.json()
         if not data.get("ok"):
             error = data.get("error", "unknown_error")
+            resp_meta = data.get("response_metadata", {})
             log_event(
                 logger,
                 logging.ERROR,
@@ -120,6 +122,8 @@ class SlackHttpClient(SlackUnfurlRepository):
                 event="slack_post_message_error",
                 error=error,
                 channel=channel_id,
+                response_metadata=json.dumps(resp_meta) if resp_meta else None,
+                blocks_json=json.dumps(blocks)[:2000],
             )
             if error in _PERMANENT_SLACK_ERRORS:
                 raise ValueError(f"Slack API error (permanent): {error}")
