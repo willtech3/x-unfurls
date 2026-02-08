@@ -263,20 +263,49 @@ def test_video_media_shows_thumbnail(builder: XUnfurlBlocksBuilder) -> None:
     assert any("Video" in t for t in texts)
 
 
-def test_video_stream_thumbnail_rejected(builder: XUnfurlBlocksBuilder) -> None:
-    """Video-stream URLs with codec paths (e.g. /vid/avc1/) should be rejected as thumbnails."""
+def test_video_stream_thumbnail_rewritten_to_static_image(builder: XUnfurlBlocksBuilder) -> None:
+    """Video-thumb CDN /vid paths should be rewritten to /img static previews."""
+    stream_thumb = (
+        "https://video.twimg.com/ext_tw_video_thumb/123/pu/vid/avc1/320x568/preview123.jpg"
+    )
     snap = _make_snapshot(
         media=[
             XMedia(
                 type="video",
                 url="https://x.co/v.mp4",
-                thumbnail_url="https://video.twimg.com/ext_tw_video_thumb/123/pu/vid/avc1/320x568/img.jpg",
+                thumbnail_url=stream_thumb,
             )
         ]
     )
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     imgs = [b for b in blocks if b["type"] == "image"]
-    assert len(imgs) == 0
+    assert len(imgs) == 1
+    assert (
+        imgs[0]["image_url"]
+        == "https://video.twimg.com/ext_tw_video_thumb/123/pu/img/preview123.jpg"
+    )
+
+
+def test_video_stream_thumbnail_rewrite_preserves_query(builder: XUnfurlBlocksBuilder) -> None:
+    snap = _make_snapshot(
+        media=[
+            XMedia(
+                type="video",
+                url="https://x.co/v.mp4",
+                thumbnail_url=(
+                    "https://video.twimg.com/ext_tw_video_thumb/123/pu/vid/avc1/320x568/"
+                    "preview123.jpg?tag=12"
+                ),
+            )
+        ]
+    )
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    imgs = [b for b in blocks if b["type"] == "image"]
+    assert len(imgs) == 1
+    assert (
+        imgs[0]["image_url"]
+        == "https://video.twimg.com/ext_tw_video_thumb/123/pu/img/preview123.jpg?tag=12"
+    )
 
 
 def test_video_without_thumbnail_skips_image_block(builder: XUnfurlBlocksBuilder) -> None:

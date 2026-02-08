@@ -5,6 +5,7 @@ Uses header, section, context, image, divider, and actions blocks
 wrapped in a colored attachment for a polished layout.
 """
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -87,7 +88,7 @@ class XUnfurlBlocksBuilder:
                     }
                 )
             elif media.type == "video":
-                thumb = media.thumbnail_url
+                thumb = self._normalize_video_thumbnail_url(media.thumbnail_url)
                 if self._is_valid_image_url(thumb):
                     blocks.append(
                         {
@@ -238,24 +239,41 @@ class XUnfurlBlocksBuilder:
         """Check if a URL is non-empty and uses http(s)."""
         return url is not None and url.startswith(("http://", "https://"))
 
-    _VIDEO_STREAM_PATTERNS = ("/vid/avc1/", "/vid/hevc/", "/vid/vp9/")
+    _VIDEO_THUMB_REWRITE_RE = re.compile(
+        r"^(?P<prefix>https?://[^/]+/ext_tw_video_thumb/[^/]+/pu/)"
+        r"vid/[^/]+/[^/]+/(?P<filename>[^/?#]+)(?P<suffix>\?.*)?$"
+    )
 
     def _is_valid_image_url(self, url: str | None) -> bool:
         """Check if a URL is valid and points to an image (not a video).
 
-        Rejects URLs ending with video file extensions AND video-stream
-        adaptation URLs (e.g. video.twimg.com/.../vid/avc1/...) that
-        masquerade as images with a .jpg extension.
+        Rejects URLs ending with video file extensions.
         """
         if not self._is_valid_url(url):
             return False
         assert url is not None  # narrowed by _is_valid_url
         path = url.split("?")[0].lower()
-        if path.endswith(self._VIDEO_EXTENSIONS):
-            return False
-        if any(p in path for p in self._VIDEO_STREAM_PATTERNS):
-            return False
-        return True
+        return not path.endswith(self._VIDEO_EXTENSIONS)
+
+    def _normalize_video_thumbnail_url(self, url: str | None) -> str | None:
+        """Normalize known video-thumb CDN URLs into static image endpoints.
+
+        Some providers return thumbnail URLs under ``.../pu/vid/...`` paths.
+        Slack image blocks are most reliable with static ``.../pu/img/...`` URLs,
+        so rewrite when we can infer the image filename safely.
+        """
+        if not self._is_valid_url(url):
+            return url
+        assert url is not None
+
+        match = self._VIDEO_THUMB_REWRITE_RE.match(url)
+        if match is None:
+            return url
+
+        prefix = match.group("prefix")
+        filename = match.group("filename")
+        suffix = match.group("suffix") or ""
+        return f"{prefix}img/{filename}{suffix}"
 
     def _clean_handle(self, handle: str) -> str:
         """Strip leading @ from handle if xAI included it."""
