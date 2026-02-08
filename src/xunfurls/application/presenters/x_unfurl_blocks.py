@@ -64,9 +64,7 @@ class XUnfurlBlocksBuilder:
                     "alt_text": f"{snapshot.author_name} avatar",
                 }
             )
-        author_elements.append(
-            {"type": "mrkdwn", "text": f"*@{handle}*  ·  {time_str}"}
-        )
+        author_elements.append({"type": "mrkdwn", "text": f"*@{handle}*  ·  {time_str}"})
         blocks.append({"type": "context", "elements": author_elements})
 
         # ── 3. Post text ────────────────────────────────────────────
