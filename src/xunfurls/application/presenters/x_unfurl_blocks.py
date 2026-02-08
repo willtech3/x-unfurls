@@ -1,8 +1,8 @@
 """Deterministic Slack block builder for X unfurls.
 
 Builds visually rich Slack Block Kit messages from X post snapshots.
-Uses header, section (with fields), context, image, divider, and
-actions blocks for a polished layout on both desktop and mobile.
+Uses header, section, context, image, divider, and actions blocks
+wrapped in a colored attachment for a polished layout.
 """
 
 from datetime import UTC, datetime
@@ -13,6 +13,9 @@ from xunfurls.domain.entities import XMetrics, XPostSnapshot
 
 class XUnfurlBlocksBuilder:
     """Builds Slack blocks from X post snapshots."""
+
+    # X brand blue — used as the attachment left-bar accent color
+    ACCENT_COLOR = "#1D9BF0"
 
     # Slack client errors that will never succeed on retry
     PERMANENT_SLACK_ERRORS = frozenset(
@@ -35,10 +38,22 @@ class XUnfurlBlocksBuilder:
         """
         blocks: list[dict[str, Any]] = []
 
-        # ── 1. Author line: avatar + name + badge + handle + time ────
+        # ── 1. Bold header: 𝕏  Name  ✓ ─────────────────────────────
+        badge = "  ✓" if snapshot.verified else ""
+        blocks.append(
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"𝕏  {snapshot.author_name}{badge}",
+                    "emoji": True,
+                },
+            }
+        )
+
+        # ── 2. Author context: avatar + @handle · time ─────────────
         handle = self._clean_handle(snapshot.author_handle)
         time_str = self._format_timestamp(snapshot.created_at)
-        badge = " ✓" if snapshot.verified else ""
 
         author_elements: list[dict[str, Any]] = []
         if self._is_valid_url(snapshot.author_avatar_url):
@@ -52,17 +67,17 @@ class XUnfurlBlocksBuilder:
         author_elements.append(
             {
                 "type": "mrkdwn",
-                "text": f"*{snapshot.author_name}*{badge}  @{handle}  ·  {time_str}",
+                "text": f"@{handle}  ·  {time_str}",
             }
         )
         blocks.append({"type": "context", "elements": author_elements})
 
-        # ── 2. Post text ─────────────────────────────────────────────
+        # ── 3. Post text ────────────────────────────────────────────
         sanitized_text = self._sanitize_text(snapshot.text)
         if sanitized_text.strip():
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": sanitized_text}})
 
-        # ── 3. Media ─────────────────────────────────────────────────
+        # ── 4. Media ────────────────────────────────────────────────
         for media in snapshot.media[:4]:
             if media.type == "image" and self._is_valid_url(media.url):
                 blocks.append(
@@ -85,7 +100,7 @@ class XUnfurlBlocksBuilder:
                 blocks.append(
                     {
                         "type": "context",
-                        "elements": [{"type": "mrkdwn", "text": "▸ *Video* — tap to watch on X"}],
+                        "elements": [{"type": "mrkdwn", "text": "▶️ *Video* — tap to watch on X"}],
                     }
                 )
             elif media.type == "gif" and self._is_valid_url(media.url):
@@ -97,14 +112,14 @@ class XUnfurlBlocksBuilder:
                     }
                 )
 
-        # ── 4. Metrics (compact single-line) ─────────────────────────
+        # ── 5. Metrics (compact with real emoji) ────────────────────
         metrics_line = self._build_metrics_line(snapshot.metrics)
         if metrics_line:
             blocks.append(
                 {"type": "context", "elements": [{"type": "mrkdwn", "text": metrics_line}]}
             )
 
-        # ── 5. Top replies ───────────────────────────────────────────
+        # ── 6. Top replies ──────────────────────────────────────────
         valid_replies = snapshot.top_replies[:3]
         if valid_replies:
             blocks.append({"type": "divider"})
@@ -119,14 +134,15 @@ class XUnfurlBlocksBuilder:
                             {
                                 "type": "mrkdwn",
                                 "text": (
-                                    f"*{reply.author_name}*{badge}  @{reply_handle}\n› {reply_text}"
+                                    f"💬 *{reply.author_name}*{badge}  @{reply_handle}"
+                                    f"\n› {reply_text}"
                                 ),
                             }
                         ],
                     }
                 )
 
-        # ── 6. Grok summary ─────────────────────────────────────────
+        # ── 7. Grok summary ────────────────────────────────────────
         if snapshot.summary:
             blocks.append({"type": "divider"})
             blocks.append(
@@ -139,7 +155,7 @@ class XUnfurlBlocksBuilder:
                 }
             )
 
-        # ── 7. Actions ───────────────────────────────────────────────
+        # ── 8. Actions ─────────────────────────────────────────────
         action_elements: list[dict[str, Any]] = [
             {
                 "type": "button",
@@ -163,7 +179,7 @@ class XUnfurlBlocksBuilder:
             )
         blocks.append({"type": "actions", "elements": action_elements})
 
-        # ── 8. Footer ────────────────────────────────────────────────
+        # ── 9. Footer ──────────────────────────────────────────────
         blocks.append(
             {
                 "type": "context",
@@ -180,19 +196,24 @@ class XUnfurlBlocksBuilder:
     def _build_metrics_line(self, metrics: XMetrics) -> str:
         """Build a compact single-line metrics string.
 
+        Icons chosen to feel cohesive with the X dark brand + space theme
+        while being instantly recognizable as engagement metrics:
+        🖤 (X's black heart), 🔃 (cycle/repost), 💭 (thought/reply),
+        📡 (satellite reach/views).
+
         Returns an empty string when all metrics are zero/None so the
         caller can skip the block entirely.
         """
         parts: list[str] = []
         if metrics.likes:
-            parts.append(f"♡ *{self._format_number(metrics.likes)}*")
+            parts.append(f"🖤 *{self._format_number(metrics.likes)}* Likes")
         if metrics.reposts:
-            parts.append(f"↻ *{self._format_number(metrics.reposts)}*")
+            parts.append(f"🔃 *{self._format_number(metrics.reposts)}* Reposts")
         if metrics.replies:
-            parts.append(f"↩ *{self._format_number(metrics.replies)}*")
+            parts.append(f"💭 *{self._format_number(metrics.replies)}* Replies")
         if metrics.views:
-            parts.append(f"◎ *{self._format_number(metrics.views)}*")
-        return "    ".join(parts)
+            parts.append(f"📡 *{self._format_number(metrics.views)}* Views")
+        return "  ·  ".join(parts)
 
     _VIDEO_EXTENSIONS = (".mp4", ".m3u8", ".webm", ".mov", ".avi")
 
