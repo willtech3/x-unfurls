@@ -8,7 +8,7 @@ wrapped in a colored attachment for a polished layout.
 from datetime import UTC, datetime
 from typing import Any
 
-from xunfurls.domain.entities import XMetrics, XPostSnapshot
+from xunfurls.domain.entities import XMetrics, XParentPost, XPostSnapshot
 
 
 class XUnfurlBlocksBuilder:
@@ -66,6 +66,10 @@ class XUnfurlBlocksBuilder:
             )
         author_elements.append({"type": "mrkdwn", "text": f"*@{handle}*  ·  {time_str}"})
         blocks.append({"type": "context", "elements": author_elements})
+
+        # ── 2b. Parent post context (for replies) ────────────────
+        if snapshot.parent_post is not None:
+            blocks.append(self._build_parent_post_block(snapshot.parent_post))
 
         # ── 3. Post text ────────────────────────────────────────────
         sanitized_text = self._sanitize_text(snapshot.text)
@@ -191,24 +195,42 @@ class XUnfurlBlocksBuilder:
     def _build_metrics_line(self, metrics: XMetrics) -> str:
         """Build a compact single-line metrics string.
 
-        Icons chosen to feel cohesive with the X dark brand + space theme
-        while being instantly recognizable as engagement metrics:
-        🖤 (X's black heart), 🔃 (cycle/repost), 💭 (thought/reply),
-        📡 (satellite reach/views).
+        Emoji-only, no text labels — keeps it compact on mobile.
+        Order matches Twitter's native UI: replies → reposts → likes → views.
 
         Returns an empty string when all metrics are zero/None so the
         caller can skip the block entirely.
         """
         parts: list[str] = []
-        if metrics.likes:
-            parts.append(f"🖤 *{self._format_number(metrics.likes)}* Likes")
-        if metrics.reposts:
-            parts.append(f"🔃 *{self._format_number(metrics.reposts)}* Reposts")
         if metrics.replies:
-            parts.append(f"💭 *{self._format_number(metrics.replies)}* Replies")
+            parts.append(f"🗨️ *{self._format_number(metrics.replies)}*")
+        if metrics.reposts:
+            parts.append(f"🔁 *{self._format_number(metrics.reposts)}*")
+        if metrics.likes:
+            parts.append(f"💚 *{self._format_number(metrics.likes)}*")
         if metrics.views:
-            parts.append(f"📡 *{self._format_number(metrics.views)}* Views")
+            parts.append(f"👁️ *{self._format_number(metrics.views)}*")
         return "  ·  ".join(parts)
+
+    _PARENT_TEXT_MAX = 280
+
+    def _build_parent_post_block(self, parent: XParentPost) -> dict[str, Any]:
+        """Build a rich_text block with a block-quote for the parent post."""
+        handle = self._clean_handle(parent.author_handle)
+        text = self._truncate(self._sanitize_text(parent.text), self._PARENT_TEXT_MAX)
+        return {
+            "type": "rich_text",
+            "elements": [
+                {
+                    "type": "rich_text_quote",
+                    "elements": [
+                        {"type": "text", "text": parent.author_name, "style": {"bold": True}},
+                        {"type": "text", "text": f"  @{handle}\n"},
+                        {"type": "text", "text": text},
+                    ],
+                }
+            ],
+        }
 
     _VIDEO_EXTENSIONS = (".mp4", ".m3u8", ".webm", ".mov", ".avi")
 

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from xunfurls.application.presenters.x_unfurl_blocks import XUnfurlBlocksBuilder
-from xunfurls.domain.entities import XMedia, XMetrics, XPostSnapshot, XReply
+from xunfurls.domain.entities import XMedia, XMetrics, XParentPost, XPostSnapshot, XReply
 
 
 @pytest.fixture
@@ -128,9 +128,9 @@ def test_footer_present(builder: XUnfurlBlocksBuilder) -> None:
     assert "Powered by Grok" in footer["elements"][0]["text"]
 
 
-def test_accent_color_constant(builder: XUnfurlBlocksBuilder) -> None:
-    """Builder should expose ACCENT_COLOR for the attachment bar."""
-    assert builder.ACCENT_COLOR == "#1D9BF0"
+def test_accent_color_constant_still_defined(builder: XUnfurlBlocksBuilder) -> None:
+    """ACCENT_COLOR is still defined (unused but kept for reference)."""
+    assert hasattr(builder, "ACCENT_COLOR")
 
 
 # ---------------------------------------------------------------------------
@@ -191,22 +191,23 @@ def test_format_number(builder: XUnfurlBlocksBuilder) -> None:
 
 
 def test_metrics_rendered_as_compact_line(builder: XUnfurlBlocksBuilder) -> None:
-    """Metrics should use themed icons with labels in a context block."""
+    """Metrics should use emoji-only icons (no labels) in a context block."""
     snap = _make_snapshot(metrics=XMetrics(likes=100, reposts=50, replies=25, views=1000))
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    # Find the metrics context block (has "Likes" label)
     metrics_blocks = [
         b
         for b in blocks
-        if b["type"] == "context"
-        and any("Likes" in e.get("text", "") for e in b.get("elements", []))
+        if b["type"] == "context" and any("💚" in e.get("text", "") for e in b.get("elements", []))
     ]
     assert len(metrics_blocks) == 1
     text = metrics_blocks[0]["elements"][0]["text"]
-    assert "🖤" in text and "Likes" in text
-    assert "🔃" in text and "Reposts" in text
-    assert "💭" in text and "Replies" in text
-    assert "📡" in text and "Views" in text
+    assert "💚" in text
+    assert "🔁" in text
+    assert "🗨️" in text
+    assert "👁️" in text
+    # No text labels
+    assert "Likes" not in text
+    assert "Reposts" not in text
 
 
 def test_zero_metrics_omitted(builder: XUnfurlBlocksBuilder) -> None:
@@ -216,8 +217,7 @@ def test_zero_metrics_omitted(builder: XUnfurlBlocksBuilder) -> None:
     metrics_blocks = [
         b
         for b in blocks
-        if b["type"] == "context"
-        and any("Likes" in e.get("text", "") for e in b.get("elements", []))
+        if b["type"] == "context" and any("💚" in e.get("text", "") for e in b.get("elements", []))
     ]
     assert len(metrics_blocks) == 0
 
@@ -229,13 +229,12 @@ def test_partial_metrics_only_nonzero_shown(builder: XUnfurlBlocksBuilder) -> No
     metrics_blocks = [
         b
         for b in blocks
-        if b["type"] == "context"
-        and any("Likes" in e.get("text", "") for e in b.get("elements", []))
+        if b["type"] == "context" and any("💚" in e.get("text", "") for e in b.get("elements", []))
     ]
     assert len(metrics_blocks) == 1
     text = metrics_blocks[0]["elements"][0]["text"]
-    assert "Likes" in text
-    assert "Reposts" not in text
+    assert "💚" in text
+    assert "🔁" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -510,3 +509,66 @@ def test_is_valid_url(builder: XUnfurlBlocksBuilder) -> None:
     assert builder._is_valid_url(None) is False
     assert builder._is_valid_url("ftp://example.com") is False
     assert builder._is_valid_url("not-a-url") is False
+
+
+# ---------------------------------------------------------------------------
+# Metrics ordering
+# ---------------------------------------------------------------------------
+
+
+def test_metrics_order_replies_first(builder: XUnfurlBlocksBuilder) -> None:
+    """Reply emoji should appear before repost emoji in the metrics string."""
+    snap = _make_snapshot(metrics=XMetrics(likes=10, reposts=20, replies=30, views=40))
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    metrics_blocks = [
+        b
+        for b in blocks
+        if b["type"] == "context" and any("💚" in e.get("text", "") for e in b.get("elements", []))
+    ]
+    text = metrics_blocks[0]["elements"][0]["text"]
+    assert text.index("🗨️") < text.index("🔁") < text.index("💚") < text.index("👁️")
+
+
+# ---------------------------------------------------------------------------
+# Parent post (reply context)
+# ---------------------------------------------------------------------------
+
+
+def test_parent_post_rendered_as_rich_text_quote(builder: XUnfurlBlocksBuilder) -> None:
+    """When parent_post is set, a rich_text block with rich_text_quote should appear."""
+    parent = XParentPost(
+        author_name="Original Author",
+        author_handle="origauthor",
+        text="This is the original post that was replied to.",
+    )
+    snap = _make_snapshot(parent_post=parent)
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    rt_blocks = [b for b in blocks if b["type"] == "rich_text"]
+    assert len(rt_blocks) == 1
+    quote = rt_blocks[0]["elements"][0]
+    assert quote["type"] == "rich_text_quote"
+    texts = [el["text"] for el in quote["elements"]]
+    assert "Original Author" in texts
+    assert any("@origauthor" in t for t in texts)
+    assert any("This is the original post" in t for t in texts)
+
+
+def test_parent_post_absent_no_rich_text_block(builder: XUnfurlBlocksBuilder) -> None:
+    """When parent_post is None, no rich_text block should appear."""
+    snap = _make_snapshot(parent_post=None)
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    rt_blocks = [b for b in blocks if b["type"] == "rich_text"]
+    assert len(rt_blocks) == 0
+
+
+def test_parent_post_text_truncated(builder: XUnfurlBlocksBuilder) -> None:
+    """Parent post text should be capped at ~280 chars."""
+    long_text = "a" * 500
+    parent = XParentPost(author_name="Author", author_handle="author", text=long_text)
+    snap = _make_snapshot(parent_post=parent)
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    rt_blocks = [b for b in blocks if b["type"] == "rich_text"]
+    quote = rt_blocks[0]["elements"][0]
+    parent_text = quote["elements"][-1]["text"]
+    assert len(parent_text) <= 280
+    assert parent_text.endswith("...")

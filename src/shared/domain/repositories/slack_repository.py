@@ -25,7 +25,6 @@ class SlackUnfurlRepository(Protocol):
         blocks: list[dict[str, Any]],
         text: str = "",
         thread_ts: str = "",
-        color: str = "",
     ) -> str:
         """Post a message with blocks to a channel.
 

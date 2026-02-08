@@ -92,7 +92,6 @@ class PostMessageCall:
     blocks: list[dict[str, Any]]
     text: str
     thread_ts: str = ""
-    color: str = ""
 
 
 @dataclass
@@ -129,9 +128,8 @@ class FakeSlackUnfurlRepository:
         blocks: list[dict[str, Any]],
         text: str = "",
         thread_ts: str = "",
-        color: str = "",
     ) -> str:
-        self.post_message_calls.append(PostMessageCall(channel_id, blocks, text, thread_ts, color))
+        self.post_message_calls.append(PostMessageCall(channel_id, blocks, text, thread_ts))
         if self.should_raise is not None:
             raise self.should_raise
         return self.post_message_ts

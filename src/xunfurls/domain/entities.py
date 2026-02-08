@@ -46,6 +46,16 @@ class XReply:
 
 
 @dataclass
+class XParentPost:
+    """Parent post context for replies."""
+
+    author_name: str
+    author_handle: str
+    text: str
+    verified: bool = False
+
+
+@dataclass
 class XPostSnapshot:
     """Snapshot of an X post with all relevant data."""
 
@@ -59,3 +69,4 @@ class XPostSnapshot:
     metrics: XMetrics
     top_replies: list[XReply]
     summary: str | None = None
+    parent_post: XParentPost | None = None

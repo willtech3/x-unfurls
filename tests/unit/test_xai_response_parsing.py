@@ -258,3 +258,43 @@ class TestSpecialCharacters:
         resp = _make_xai_response(data)
         snap = parse_xai_response(resp)
         assert "\n" in snap.text
+
+
+# ---------------------------------------------------------------------------
+# Parent post parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParentPostParsing:
+    def test_parent_post_parsed_correctly(self):
+        data = {
+            "text": "This is a reply",
+            "parent_post": {
+                "author_name": "Original Author",
+                "author_handle": "origauthor",
+                "text": "Original post text",
+                "verified": True,
+            },
+        }
+        resp = _make_xai_response(data)
+        snap = parse_xai_response(resp)
+        assert snap.parent_post is not None
+        assert snap.parent_post.author_name == "Original Author"
+        assert snap.parent_post.author_handle == "origauthor"
+        assert snap.parent_post.text == "Original post text"
+        assert snap.parent_post.verified is True
+
+    def test_parent_post_null_when_not_reply(self):
+        data = {
+            "text": "This is a top-level post",
+            "parent_post": None,
+        }
+        resp = _make_xai_response(data)
+        snap = parse_xai_response(resp)
+        assert snap.parent_post is None
+
+    def test_parent_post_absent_defaults_to_none(self):
+        data = {"text": "No parent_post key at all"}
+        resp = _make_xai_response(data)
+        snap = parse_xai_response(resp)
+        assert snap.parent_post is None
