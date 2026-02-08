@@ -29,3 +29,15 @@ class XRepository(Protocol):
             Complete post snapshot with requested data
         """
         ...
+
+    async def ask_about_post(self, status_ref: XStatusRef, question: str) -> str:
+        """Ask a follow-up question about an X post.
+
+        Args:
+            status_ref: Reference to the X post
+            question: The user's question about the post
+
+        Returns:
+            Grok's response as plain text
+        """
+        ...

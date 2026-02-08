@@ -35,11 +35,15 @@ class FakeXRepository:
         snapshots: Pre-loaded mapping of (status_id, mode) -> snapshot.
         fetch_calls: Every call recorded as (status_ref, mode) tuples.
         default_snapshot: Returned when no matching entry exists.
+        ask_calls: Every ask_about_post call recorded.
+        ask_response: Default response for ask_about_post.
     """
 
     snapshots: dict[tuple[str, FetchMode], XPostSnapshot] = field(default_factory=dict)
     fetch_calls: list[tuple[XStatusRef, FetchMode]] = field(default_factory=list)
     default_snapshot: XPostSnapshot | None = None
+    ask_calls: list[tuple[XStatusRef, str]] = field(default_factory=list)
+    ask_response: str = "This is Grok's answer."
 
     def set_response(
         self, status_id: str, snapshot: XPostSnapshot, mode: FetchMode = FetchMode.RICH
@@ -60,6 +64,10 @@ class FakeXRepository:
             f"FakeXRepository has no snapshot for status_id={status_ref.status_id!r}, "
             f"mode={mode!r}. Register one via set_response() or default_snapshot."
         )
+
+    async def ask_about_post(self, status_ref: XStatusRef, question: str) -> str:
+        self.ask_calls.append((status_ref, question))
+        return self.ask_response
 
 
 assert isinstance(FakeXRepository(), XRepository), (
@@ -83,6 +91,15 @@ class PostMessageCall:
     channel_id: str
     blocks: list[dict[str, Any]]
     text: str
+    thread_ts: str = ""
+
+
+@dataclass
+class OpenModalCall:
+    """Record of a single open_modal invocation."""
+
+    trigger_id: str
+    view: dict[str, Any]
 
 
 @dataclass
@@ -91,7 +108,9 @@ class FakeSlackUnfurlRepository:
 
     unfurl_calls: list[UnfurlCall] = field(default_factory=list)
     post_message_calls: list[PostMessageCall] = field(default_factory=list)
+    open_modal_calls: list[OpenModalCall] = field(default_factory=list)
     should_raise: Exception | None = None
+    post_message_ts: str = "1700000001.000200"
 
     async def unfurl_links(
         self,
@@ -108,8 +127,15 @@ class FakeSlackUnfurlRepository:
         channel_id: str,
         blocks: list[dict[str, Any]],
         text: str = "",
-    ) -> None:
-        self.post_message_calls.append(PostMessageCall(channel_id, blocks, text))
+        thread_ts: str = "",
+    ) -> str:
+        self.post_message_calls.append(PostMessageCall(channel_id, blocks, text, thread_ts))
+        if self.should_raise is not None:
+            raise self.should_raise
+        return self.post_message_ts
+
+    async def open_modal(self, trigger_id: str, view: dict[str, Any]) -> None:
+        self.open_modal_calls.append(OpenModalCall(trigger_id, view))
         if self.should_raise is not None:
             raise self.should_raise
 
@@ -298,6 +324,8 @@ def make_job_dto() -> Callable[..., XUnfurlJobDto]:
         trace_id: str = "",
         unfurl_id: str | None = None,
         created_at: str = "",
+        user_prompt: str = "",
+        user_id: str = "",
     ) -> XUnfurlJobDto:
         nonlocal _counter
         _counter += 1
@@ -313,6 +341,8 @@ def make_job_dto() -> Callable[..., XUnfurlJobDto]:
             trace_id=trace_id,
             unfurl_id=unfurl_id,
             created_at=created_at,
+            user_prompt=user_prompt,
+            user_id=user_id,
         )
 
     return _factory

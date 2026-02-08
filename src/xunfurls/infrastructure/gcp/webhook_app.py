@@ -17,6 +17,7 @@ from shared.domain.dtos import XUnfurlJobDto
 from shared.domain.repositories.job_queue_repository import JobQueueProducer
 from shared.infrastructure.logging import ensure_trace_id, log_event, setup_logging
 from xunfurls.infrastructure.gcp.pubsub_job_queue import PubSubJobQueue
+from xunfurls.infrastructure.gcp.slack_client import SlackHttpClient
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -29,6 +30,9 @@ app = FastAPI(
 
 # CQ-3: Injectable job queue (supports DI for testing)
 _job_queue: JobQueueProducer | None = None
+
+# Lazy-initialized Slack client for modal interactions
+_slack_client: SlackHttpClient | None = None
 
 
 def set_job_queue(queue: JobQueueProducer) -> None:
@@ -47,6 +51,20 @@ def get_job_queue() -> JobQueueProducer:
     if _job_queue is None:
         _job_queue = PubSubJobQueue()
     return _job_queue
+
+
+def set_slack_client(client: SlackHttpClient) -> None:
+    """Inject a Slack client instance (useful for testing)."""
+    global _slack_client
+    _slack_client = client
+
+
+def get_slack_client() -> SlackHttpClient:
+    """Get or create the Slack client instance."""
+    global _slack_client
+    if _slack_client is None:
+        _slack_client = SlackHttpClient()
+    return _slack_client
 
 
 # X domain patterns
@@ -334,7 +352,7 @@ async def handle_message(payload: dict[str, Any], event: dict[str, Any]) -> None
 async def slack_interactive(request: Request) -> dict[str, Any]:
     """Handle Slack interactive component callbacks.
 
-    Processes button clicks from unfurl blocks (e.g. "Summarize with Grok").
+    Processes button clicks and modal submissions.
     Slack sends the payload as form-encoded: payload=<JSON>.
 
     Args:
@@ -366,9 +384,12 @@ async def slack_interactive(request: Request) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {"ok": True}
 
-    # Dispatch on action type
-    if payload.get("type") == "block_actions":
+    # Dispatch on payload type
+    payload_type = payload.get("type")
+    if payload_type == "block_actions":
         await _handle_block_actions(payload)
+    elif payload_type == "view_submission":
+        await _handle_view_submission(payload)
 
     return {"ok": True}
 
@@ -386,12 +407,162 @@ async def _handle_block_actions(payload: dict[str, Any]) -> None:
     action = actions[0]
     action_id = action.get("action_id", "")
 
-    if action_id == "x_unfurl_summarize":
+    if action_id == "x_unfurl_ask_grok":
+        await _handle_ask_grok_action(payload, action)
+    elif action_id == "x_unfurl_summarize":
+        # Legacy: still handle old summarize action
         await _handle_summarize_action(payload, action)
 
 
+async def _handle_ask_grok_action(payload: dict[str, Any], action: dict[str, Any]) -> None:
+    """Handle 'Ask Grok' button click by opening a modal.
+
+    Uses the trigger_id (valid for 3s) to open a Slack modal where
+    the user can type their follow-up question.
+
+    Args:
+        payload: Full interactive payload (contains trigger_id)
+        action: The specific action that was triggered
+    """
+    trigger_id = payload.get("trigger_id", "")
+    if not trigger_id:
+        log_event(logger, logging.WARNING, "No trigger_id", event="ask_grok_no_trigger")
+        return
+
+    canonical_url = action.get("value", "")
+    channel_id = payload.get("channel", {}).get("id", "")
+    message_ts = payload.get("container", {}).get("message_ts", "")
+
+    # Pack context into private_metadata so we can retrieve it on submission
+    private_metadata = json.dumps(
+        {
+            "canonical_url": canonical_url,
+            "channel_id": channel_id,
+            "message_ts": message_ts,
+        }
+    )
+
+    modal_view: dict[str, Any] = {
+        "type": "modal",
+        "callback_id": "ask_grok_modal",
+        "title": {"type": "plain_text", "text": "Ask Grok"},
+        "submit": {"type": "plain_text", "text": "Ask"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "private_metadata": private_metadata,
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "question_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "question_input",
+                    "multiline": True,
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "What would you like to know about this post?",
+                    },
+                },
+                "label": {"type": "plain_text", "text": "Your question"},
+            }
+        ],
+    }
+
+    slack = get_slack_client()
+    await slack.open_modal(trigger_id, modal_view)
+
+    log_event(
+        logger,
+        logging.INFO,
+        "Opened Ask Grok modal",
+        event="ask_grok_modal_opened",
+        canonical_url=canonical_url,
+    )
+
+
+async def _handle_view_submission(payload: dict[str, Any]) -> None:
+    """Handle modal form submissions.
+
+    Args:
+        payload: Parsed Slack view_submission payload
+    """
+    callback_id = payload.get("view", {}).get("callback_id", "")
+
+    if callback_id == "ask_grok_modal":
+        await _handle_ask_grok_submission(payload)
+
+
+async def _handle_ask_grok_submission(payload: dict[str, Any]) -> None:
+    """Handle Ask Grok modal submission.
+
+    Extracts the user's question and enqueues an ask_grok job.
+
+    Args:
+        payload: Full view_submission payload
+    """
+    view = payload.get("view", {})
+
+    # Extract the question from form values
+    values = view.get("state", {}).get("values", {})
+    question_block = values.get("question_block", {})
+    question_input = question_block.get("question_input", {})
+    user_prompt = question_input.get("value", "").strip()
+
+    if not user_prompt:
+        return
+
+    # Extract context from private_metadata
+    try:
+        metadata = json.loads(view.get("private_metadata", "{}"))
+    except json.JSONDecodeError:
+        return
+
+    canonical_url = metadata.get("canonical_url", "")
+    channel_id = metadata.get("channel_id", "")
+    message_ts = metadata.get("message_ts", "")
+
+    status_id = extract_status_id(canonical_url)
+    if not status_id:
+        log_event(
+            logger,
+            logging.WARNING,
+            "Could not extract status ID from ask_grok submission",
+            event="ask_grok_invalid_url",
+            url=canonical_url,
+        )
+        return
+
+    user_id = payload.get("user", {}).get("id", "")
+
+    job = XUnfurlJobDto(
+        job_id=str(uuid.uuid4()),
+        channel_id=channel_id,
+        message_ts=message_ts,
+        team_id="",
+        original_url=canonical_url,
+        canonical_url=canonical_url,
+        status_id=status_id,
+        action="ask_grok",
+        trace_id=str(uuid.uuid4()),
+        user_prompt=user_prompt,
+        user_id=user_id,
+    )
+
+    message_id = await get_job_queue().enqueue_job(job)
+
+    log_event(
+        logger,
+        logging.INFO,
+        "Enqueued Ask Grok job",
+        event="ask_grok_enqueued",
+        job_id=job.job_id,
+        status_id=status_id,
+        message_id=message_id,
+        user_id=user_id,
+    )
+
+
 async def _handle_summarize_action(payload: dict[str, Any], action: dict[str, Any]) -> None:
-    """Handle 'Summarize with Grok' button click.
+    """Handle legacy 'Summarize with Grok' button click.
 
     Enqueues a summarize job for the post identified by the button value.
 

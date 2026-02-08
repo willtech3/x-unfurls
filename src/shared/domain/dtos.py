@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 # CQ-1: Constrained action type instead of bare str
-ActionType = Literal["generate", "refresh", "summarize"]
+ActionType = Literal["generate", "refresh", "summarize", "ask_grok"]
 
 
 @dataclass
@@ -22,3 +22,5 @@ class XUnfurlJobDto:
     trace_id: str = ""
     unfurl_id: str | None = None
     created_at: str = ""
+    user_prompt: str = ""
+    user_id: str = ""

@@ -124,10 +124,10 @@ class TestCQ1ActionEnum:
         assert hasattr(action_type, "__args__"), (
             f"action field should be Literal[...], got {action_type}"
         )
-        assert set(action_type.__args__) == {"generate", "refresh", "summarize"}
+        assert set(action_type.__args__) == {"generate", "refresh", "summarize", "ask_grok"}
 
     def test_job_dto_all_valid_actions(self) -> None:
-        for action in ("generate", "refresh", "summarize"):
+        for action in ("generate", "refresh", "summarize", "ask_grok"):
             dto = XUnfurlJobDto(
                 job_id="j1",
                 channel_id="C1",

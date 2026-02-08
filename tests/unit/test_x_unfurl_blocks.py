@@ -44,62 +44,6 @@ def sample_snapshot() -> XPostSnapshot:
     )
 
 
-def test_build_unfurl_blocks_basic(
-    builder: XUnfurlBlocksBuilder, sample_snapshot: XPostSnapshot
-) -> None:
-    """Test building basic unfurl blocks."""
-    blocks = builder.build_unfurl_blocks(sample_snapshot, "https://x.com/johndoe/status/123")
-
-    assert len(blocks) > 0
-    # Should have context, section, image, metrics, divider, reply, summary, actions
-    assert any(block["type"] == "context" for block in blocks)
-    assert any(block["type"] == "section" for block in blocks)
-    assert any(block["type"] == "image" for block in blocks)
-    assert any(block["type"] == "divider" for block in blocks)
-    assert any(block["type"] == "actions" for block in blocks)
-
-
-def test_sanitize_text(builder: XUnfurlBlocksBuilder) -> None:
-    """Test text sanitization."""
-    text = "@channel @here @everyone normal text"
-    sanitized = builder._sanitize_text(text)
-
-    # Should contain zero-width space to prevent mentions
-    assert "@\u200bchannel" in sanitized
-    assert "@\u200bhere" in sanitized
-    assert "@\u200beveryone" in sanitized
-
-
-def test_truncate_text(builder: XUnfurlBlocksBuilder) -> None:
-    """Test text truncation."""
-    long_text = "a" * 100
-    truncated = builder._truncate(long_text, 50)
-
-    assert len(truncated) == 50
-    assert truncated.endswith("...")
-
-
-def test_format_number(builder: XUnfurlBlocksBuilder) -> None:
-    """Test number formatting."""
-    assert builder._format_number(500) == "500"
-    assert builder._format_number(1500) == "1.5K"
-    assert builder._format_number(1500000) == "1.5M"
-
-
-def test_build_unfurl_blocks_with_summary(
-    builder: XUnfurlBlocksBuilder, sample_snapshot: XPostSnapshot
-) -> None:
-    """Test building blocks with Grok summary."""
-    blocks = builder.build_unfurl_blocks(sample_snapshot, "https://x.com/johndoe/status/123")
-
-    # Should include summary context block
-    summary_blocks = [b for b in blocks if b.get("type") == "context"]
-    summary_text = "\n".join(
-        str(elem.get("text", "")) for block in summary_blocks for elem in block.get("elements", [])
-    )
-    assert "Grok summary" in summary_text
-
-
 # ---------------------------------------------------------------------------
 # Helper for concise snapshot creation in new tests
 # ---------------------------------------------------------------------------
@@ -123,7 +67,150 @@ def _make_snapshot(**kw: object) -> XPostSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# BUG-3: Video and GIF media handling
+# Basic block structure
+# ---------------------------------------------------------------------------
+
+
+def test_build_unfurl_blocks_basic(
+    builder: XUnfurlBlocksBuilder, sample_snapshot: XPostSnapshot
+) -> None:
+    """Test building basic unfurl blocks with all sections."""
+    blocks = builder.build_unfurl_blocks(sample_snapshot, "https://x.com/johndoe/status/123")
+
+    assert len(blocks) > 0
+    block_types = [b["type"] for b in blocks]
+
+    # New layout: header, context (author), section (text), image, section (metrics),
+    # divider, context (reply), divider, section (summary), actions, context (footer)
+    assert block_types[0] == "header"
+    assert "context" in block_types
+    assert "section" in block_types
+    assert "image" in block_types
+    assert "divider" in block_types
+    assert "actions" in block_types
+
+
+def test_header_contains_author_name(builder: XUnfurlBlocksBuilder) -> None:
+    """Header block should contain the X logo and author name."""
+    snap = _make_snapshot(author_name="Elon Musk", verified=True)
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    header = blocks[0]
+    assert header["type"] == "header"
+    assert "Elon Musk" in header["text"]["text"]
+    assert "✓" in header["text"]["text"]
+    assert "𝕏" in header["text"]["text"]
+
+
+def test_header_no_badge_when_unverified(builder: XUnfurlBlocksBuilder) -> None:
+    snap = _make_snapshot(verified=False)
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    header = blocks[0]
+    assert "✓" not in header["text"]["text"]
+
+
+def test_footer_present(builder: XUnfurlBlocksBuilder) -> None:
+    """Footer should have Grok branding."""
+    snap = _make_snapshot()
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    footer = blocks[-1]
+    assert footer["type"] == "context"
+    assert "Powered by Grok" in footer["elements"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# Text handling
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_text(builder: XUnfurlBlocksBuilder) -> None:
+    """Test text sanitization."""
+    text = "@channel @here @everyone normal text"
+    sanitized = builder._sanitize_text(text)
+    assert "@\u200bchannel" in sanitized
+    assert "@\u200bhere" in sanitized
+    assert "@\u200beveryone" in sanitized
+
+
+def test_truncate_text(builder: XUnfurlBlocksBuilder) -> None:
+    """Test text truncation."""
+    long_text = "a" * 100
+    truncated = builder._truncate(long_text, 50)
+    assert len(truncated) == 50
+    assert truncated.endswith("...")
+
+
+def test_empty_text_skips_section(builder: XUnfurlBlocksBuilder) -> None:
+    """Posts with no text should not produce an empty section block."""
+    snap = _make_snapshot(text="")
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    # Should not have a section block with empty text
+    for b in blocks:
+        if b["type"] == "section" and "text" in b:
+            assert b["text"]["text"].strip() != ""
+
+
+def test_whitespace_only_text_skips_section(builder: XUnfurlBlocksBuilder) -> None:
+    """Posts with only whitespace should not produce a section block."""
+    snap = _make_snapshot(text="   \n  ")
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    for b in blocks:
+        if b["type"] == "section" and "text" in b:
+            assert b["text"]["text"].strip() != ""
+
+
+# ---------------------------------------------------------------------------
+# Number formatting
+# ---------------------------------------------------------------------------
+
+
+def test_format_number(builder: XUnfurlBlocksBuilder) -> None:
+    """Test number formatting."""
+    assert builder._format_number(500) == "500"
+    assert builder._format_number(1500) == "1.5K"
+    assert builder._format_number(1500000) == "1.5M"
+
+
+# ---------------------------------------------------------------------------
+# Metrics rendering (section fields grid)
+# ---------------------------------------------------------------------------
+
+
+def test_metrics_rendered_as_fields(builder: XUnfurlBlocksBuilder) -> None:
+    """Metrics should be rendered as section fields (2-column grid)."""
+    snap = _make_snapshot(metrics=XMetrics(likes=100, reposts=50, replies=25, views=1000))
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    metrics_blocks = [b for b in blocks if b["type"] == "section" and "fields" in b]
+    assert len(metrics_blocks) == 1
+    fields = metrics_blocks[0]["fields"]
+    assert len(fields) == 4
+    field_texts = [f["text"] for f in fields]
+    assert any("Likes" in t for t in field_texts)
+    assert any("Reposts" in t for t in field_texts)
+    assert any("Replies" in t for t in field_texts)
+    assert any("Views" in t for t in field_texts)
+
+
+def test_zero_metrics_omitted(builder: XUnfurlBlocksBuilder) -> None:
+    """When all metrics are zero, no metrics section should appear."""
+    snap = _make_snapshot(metrics=XMetrics(likes=0, reposts=0, replies=0, views=0))
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    metrics_blocks = [b for b in blocks if b["type"] == "section" and "fields" in b]
+    assert len(metrics_blocks) == 0
+
+
+def test_partial_metrics_only_nonzero_shown(builder: XUnfurlBlocksBuilder) -> None:
+    """Only non-zero metrics should appear as fields."""
+    snap = _make_snapshot(metrics=XMetrics(likes=100, reposts=0, replies=0, views=0))
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    metrics_blocks = [b for b in blocks if b["type"] == "section" and "fields" in b]
+    assert len(metrics_blocks) == 1
+    fields = metrics_blocks[0]["fields"]
+    assert len(fields) == 1
+    assert "Likes" in fields[0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# Media handling
 # ---------------------------------------------------------------------------
 
 
@@ -180,15 +267,31 @@ def test_mixed_media_types_all_rendered(builder: XUnfurlBlocksBuilder) -> None:
     assert "https://x.co/g.gif" in img_urls
 
 
+def test_invalid_media_url_skipped(builder: XUnfurlBlocksBuilder) -> None:
+    """Media with empty or non-HTTP URLs should be silently skipped."""
+    snap = _make_snapshot(
+        media=[
+            XMedia(type="image", url=""),
+            XMedia(type="image", url="not-a-url"),
+            XMedia(type="image", url="https://x.co/valid.jpg"),
+        ]
+    )
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    imgs = [b for b in blocks if b["type"] == "image"]
+    assert len(imgs) == 1
+    assert imgs[0]["image_url"] == "https://x.co/valid.jpg"
+
+
 # ---------------------------------------------------------------------------
-# UI-1: Author avatar
+# Author avatar
 # ---------------------------------------------------------------------------
 
 
 def test_author_avatar_displayed(builder: XUnfurlBlocksBuilder) -> None:
     snap = _make_snapshot(author_avatar_url="https://x.co/avatar.jpg", author_name="Jane")
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    author_block = blocks[0]
+    # Author context is the second block (after header)
+    author_block = blocks[1]
     img_elems = [e for e in author_block["elements"] if e.get("type") == "image"]
     assert len(img_elems) == 1
     assert img_elems[0]["image_url"] == "https://x.co/avatar.jpg"
@@ -198,52 +301,44 @@ def test_author_avatar_displayed(builder: XUnfurlBlocksBuilder) -> None:
 def test_missing_avatar_no_image_element(builder: XUnfurlBlocksBuilder) -> None:
     snap = _make_snapshot(author_avatar_url=None)
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    author_block = blocks[0]
+    author_block = blocks[1]
+    img_elems = [e for e in author_block["elements"] if e.get("type") == "image"]
+    assert len(img_elems) == 0
+
+
+def test_invalid_avatar_url_no_image_element(builder: XUnfurlBlocksBuilder) -> None:
+    """Invalid avatar URLs should not produce an image element."""
+    snap = _make_snapshot(author_avatar_url="not-a-url")
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    author_block = blocks[1]
     img_elems = [e for e in author_block["elements"] if e.get("type") == "image"]
     assert len(img_elems) == 0
 
 
 # ---------------------------------------------------------------------------
-# UI-4: Zero metrics handling
+# Handle cleaning
 # ---------------------------------------------------------------------------
 
 
-def test_zero_metrics_block_omitted(builder: XUnfurlBlocksBuilder) -> None:
-    snap = _make_snapshot(metrics=XMetrics(likes=0, reposts=0, replies=0, views=0))
+def test_handle_at_prefix_stripped(builder: XUnfurlBlocksBuilder) -> None:
+    """If xAI returns @handle with @ prefix, we should strip it."""
+    snap = _make_snapshot(author_handle="@elonmusk")
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    for b in blocks:
-        if b["type"] == "context":
-            for e in b.get("elements", []):
-                text = e.get("text", "")
-                assert "💬" not in text
-                assert "🔁" not in text
-                assert "❤️" not in text
-                assert "👁" not in text
-
-
-def test_partial_metrics_only_nonzero_shown(builder: XUnfurlBlocksBuilder) -> None:
-    snap = _make_snapshot(metrics=XMetrics(likes=100, reposts=0, replies=0, views=0))
-    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    metrics_block = None
-    for b in blocks:
-        if b["type"] == "context":
-            for e in b.get("elements", []):
-                if "❤️" in e.get("text", ""):
-                    metrics_block = b
-    assert metrics_block is not None
-    text = metrics_block["elements"][0]["text"]
-    assert "❤️" in text
-    assert "💬" not in text
-    assert "🔁" not in text
+    author_block = blocks[1]
+    author_text = [
+        e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
+    ][0]
+    assert "@elonmusk" in author_text
+    assert "@@elonmusk" not in author_text
 
 
 # ---------------------------------------------------------------------------
-# UI-7: Grok summary button (opt-in)
+# Ask Grok button
 # ---------------------------------------------------------------------------
 
 
-def test_summarize_button_present_when_no_summary(builder: XUnfurlBlocksBuilder) -> None:
-    """When summary is None, the actions block should include 'Summarize with Grok'."""
+def test_ask_grok_button_present_when_no_summary(builder: XUnfurlBlocksBuilder) -> None:
+    """When summary is None, the actions block should include 'Ask Grok'."""
     snap = _make_snapshot(summary=None)
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/999")
     actions_blocks = [b for b in blocks if b["type"] == "actions"]
@@ -251,11 +346,11 @@ def test_summarize_button_present_when_no_summary(builder: XUnfurlBlocksBuilder)
     buttons = actions_blocks[0]["elements"]
     action_ids = [btn["action_id"] for btn in buttons]
     assert "x_unfurl_open" in action_ids
-    assert "x_unfurl_summarize" in action_ids
+    assert "x_unfurl_ask_grok" in action_ids
 
 
-def test_summarize_button_absent_when_summary_present(builder: XUnfurlBlocksBuilder) -> None:
-    """When summary is present, 'Summarize with Grok' button should NOT appear."""
+def test_ask_grok_button_absent_when_summary_present(builder: XUnfurlBlocksBuilder) -> None:
+    """When summary is present, 'Ask Grok' button should NOT appear."""
     snap = _make_snapshot(summary="This is a Grok-generated summary.")
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/999")
     actions_blocks = [b for b in blocks if b["type"] == "actions"]
@@ -263,23 +358,70 @@ def test_summarize_button_absent_when_summary_present(builder: XUnfurlBlocksBuil
     buttons = actions_blocks[0]["elements"]
     action_ids = [btn["action_id"] for btn in buttons]
     assert "x_unfurl_open" in action_ids
-    assert "x_unfurl_summarize" not in action_ids
+    assert "x_unfurl_ask_grok" not in action_ids
 
 
-def test_summarize_button_value_contains_canonical_url(builder: XUnfurlBlocksBuilder) -> None:
-    """The summarize button value should contain the canonical URL for re-fetching."""
+def test_ask_grok_button_value_contains_canonical_url(builder: XUnfurlBlocksBuilder) -> None:
+    """The ask grok button value should contain the canonical URL."""
     snap = _make_snapshot(summary=None)
     url = "https://x.com/testuser/status/42"
     blocks = builder.build_unfurl_blocks(snap, url)
     actions_blocks = [b for b in blocks if b["type"] == "actions"]
-    summarize_btn = [
-        btn for btn in actions_blocks[0]["elements"] if btn["action_id"] == "x_unfurl_summarize"
+    ask_btn = [
+        btn for btn in actions_blocks[0]["elements"] if btn["action_id"] == "x_unfurl_ask_grok"
     ][0]
-    assert summarize_btn["value"] == url
+    assert ask_btn["value"] == url
 
 
 # ---------------------------------------------------------------------------
-# UI-3: Relative timestamps
+# Grok summary rendering
+# ---------------------------------------------------------------------------
+
+
+def test_build_unfurl_blocks_with_summary(
+    builder: XUnfurlBlocksBuilder, sample_snapshot: XPostSnapshot
+) -> None:
+    """Test building blocks with Grok summary."""
+    blocks = builder.build_unfurl_blocks(sample_snapshot, "https://x.com/johndoe/status/123")
+
+    # Summary should be in a section block with Grok branding
+    summary_sections = [
+        b for b in blocks if b["type"] == "section" and "Grok" in b.get("text", {}).get("text", "")
+    ]
+    assert len(summary_sections) == 1
+    assert "✦" in summary_sections[0]["text"]["text"]
+
+
+# ---------------------------------------------------------------------------
+# Replies rendering (context blocks)
+# ---------------------------------------------------------------------------
+
+
+def test_replies_rendered_as_context_blocks(builder: XUnfurlBlocksBuilder) -> None:
+    """Replies should be rendered as compact context blocks."""
+    snap = _make_snapshot(
+        top_replies=[
+            XReply(author_name="Alice", author_handle="alice", text="Great!", verified=True),
+            XReply(author_name="Bob", author_handle="bob", text="Thanks!", verified=False),
+        ]
+    )
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+
+    # Find divider before replies
+    divider_idx = next(i for i, b in enumerate(blocks) if b["type"] == "divider")
+    reply_blocks = [b for b in blocks[divider_idx + 1 :] if b["type"] == "context"]
+    # Exclude footer
+    reply_blocks = [b for b in reply_blocks if "Powered by" not in b["elements"][0].get("text", "")]
+
+    assert len(reply_blocks) == 2
+    assert "Alice" in reply_blocks[0]["elements"][0]["text"]
+    assert "✓" in reply_blocks[0]["elements"][0]["text"]
+    assert "Bob" in reply_blocks[1]["elements"][0]["text"]
+    assert "✓" not in reply_blocks[1]["elements"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# Timestamps
 # ---------------------------------------------------------------------------
 
 
@@ -290,7 +432,7 @@ def test_recent_post_shows_relative_time(builder: XUnfurlBlocksBuilder) -> None:
     recent = datetime.now(UTC) - timedelta(minutes=5)
     snap = _make_snapshot(created_at=recent)
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    author_block = blocks[0]
+    author_block = blocks[1]
     author_text = [
         e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
     ][0]
@@ -302,7 +444,7 @@ def test_old_post_shows_absolute_date(builder: XUnfurlBlocksBuilder) -> None:
     old = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
     snap = _make_snapshot(created_at=old)
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    author_block = blocks[0]
+    author_block = blocks[1]
     author_text = [
         e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
     ][0]
@@ -316,8 +458,23 @@ def test_hours_ago_shown_correctly(builder: XUnfurlBlocksBuilder) -> None:
     hours_ago = datetime.now(UTC) - timedelta(hours=3)
     snap = _make_snapshot(created_at=hours_ago)
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    author_block = blocks[0]
+    author_block = blocks[1]
     author_text = [
         e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
     ][0]
     assert "hours ago" in author_text
+
+
+# ---------------------------------------------------------------------------
+# URL validation
+# ---------------------------------------------------------------------------
+
+
+def test_is_valid_url(builder: XUnfurlBlocksBuilder) -> None:
+    """URL validation helper checks for http/https prefix."""
+    assert builder._is_valid_url("https://example.com/img.jpg") is True
+    assert builder._is_valid_url("http://example.com/img.jpg") is True
+    assert builder._is_valid_url("") is False
+    assert builder._is_valid_url(None) is False
+    assert builder._is_valid_url("ftp://example.com") is False
+    assert builder._is_valid_url("not-a-url") is False

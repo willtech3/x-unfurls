@@ -51,6 +51,10 @@ class CachingXRepository:
         self._cache.move_to_end(key)
         return snapshot
 
+    async def ask_about_post(self, status_ref: XStatusRef, question: str) -> str:
+        """Pass through to inner repository (Q&A is never cached)."""
+        return await self._inner.ask_about_post(status_ref, question)
+
     def _put(self, key: str, snapshot: XPostSnapshot) -> None:
         self._cache[key] = (time.monotonic(), snapshot)
         self._cache.move_to_end(key)

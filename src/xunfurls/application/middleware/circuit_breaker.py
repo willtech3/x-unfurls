@@ -35,23 +35,42 @@ class CircuitBreakerXRepository:
         self._last_failure_time: float = 0.0
         self._is_open = False
 
-    async def fetch_post_snapshot(self, status_ref: XStatusRef, mode: FetchMode) -> XPostSnapshot:
-        """Fetch with circuit breaker protection."""
+    def _check_breaker(self) -> None:
+        """Check circuit state; raise if open and not yet recovered."""
         if self._is_open:
             if time.monotonic() - self._last_failure_time < self._recovery_timeout:
                 raise CircuitOpenError(
                     f"Circuit breaker open, {self._failure_count} consecutive failures"
                 )
-            # Recovery timeout elapsed — try one probe request (half-open)
             self._is_open = False
 
+    def _record_success(self) -> None:
+        self._failure_count = 0
+
+    def _record_failure(self) -> None:
+        self._failure_count += 1
+        self._last_failure_time = time.monotonic()
+        if self._failure_count >= self._failure_threshold:
+            self._is_open = True
+
+    async def fetch_post_snapshot(self, status_ref: XStatusRef, mode: FetchMode) -> XPostSnapshot:
+        """Fetch with circuit breaker protection."""
+        self._check_breaker()
         try:
             result = await self._inner.fetch_post_snapshot(status_ref, mode)
-            self._failure_count = 0  # Reset on success
+            self._record_success()
             return result
         except Exception:
-            self._failure_count += 1
-            self._last_failure_time = time.monotonic()
-            if self._failure_count >= self._failure_threshold:
-                self._is_open = True
+            self._record_failure()
+            raise
+
+    async def ask_about_post(self, status_ref: XStatusRef, question: str) -> str:
+        """Ask with circuit breaker protection."""
+        self._check_breaker()
+        try:
+            result = await self._inner.ask_about_post(status_ref, question)
+            self._record_success()
+            return result
+        except Exception:
+            self._record_failure()
             raise

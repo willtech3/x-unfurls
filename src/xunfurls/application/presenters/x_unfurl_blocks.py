@@ -1,13 +1,23 @@
-"""Deterministic Slack block builder for X unfurls."""
+"""Deterministic Slack block builder for X unfurls.
+
+Builds visually rich Slack Block Kit messages from X post snapshots.
+Uses header, section (with fields), context, image, divider, and
+actions blocks for a polished layout on both desktop and mobile.
+"""
 
 from datetime import UTC, datetime
 from typing import Any
 
-from xunfurls.domain.entities import XPostSnapshot
+from xunfurls.domain.entities import XMetrics, XPostSnapshot
 
 
 class XUnfurlBlocksBuilder:
     """Builds Slack blocks from X post snapshots."""
+
+    # Slack client errors that will never succeed on retry
+    PERMANENT_SLACK_ERRORS = frozenset(
+        {"invalid_blocks", "channel_not_found", "not_in_channel", "invalid_auth", "no_text"}
+    )
 
     def build_unfurl_blocks(
         self, snapshot: XPostSnapshot, canonical_url: str
@@ -25,14 +35,27 @@ class XUnfurlBlocksBuilder:
         """
         blocks: list[dict[str, Any]] = []
 
-        # 1. Context: Author info + avatar + timestamp
-        author_text = f"*{snapshot.author_name}* (@{snapshot.author_handle})"
+        # ── 1. Header ──────────────────────────────────────────────────
+        header_text = f"𝕏  {snapshot.author_name}"
         if snapshot.verified:
-            author_text += " ✓"
-        author_text += f" • {self._format_timestamp(snapshot.created_at)}"
+            header_text += "  ✓"
+        blocks.append(
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": self._truncate(header_text, 150),
+                    "emoji": True,
+                },
+            }
+        )
+
+        # ── 2. Author context: avatar + handle + timestamp ────────────
+        handle = self._clean_handle(snapshot.author_handle)
+        time_str = self._format_timestamp(snapshot.created_at)
 
         author_elements: list[dict[str, Any]] = []
-        if snapshot.author_avatar_url:
+        if self._is_valid_url(snapshot.author_avatar_url):
             author_elements.append(
                 {
                     "type": "image",
@@ -40,17 +63,17 @@ class XUnfurlBlocksBuilder:
                     "alt_text": f"{snapshot.author_name} avatar",
                 }
             )
-        author_elements.append({"type": "mrkdwn", "text": author_text})
-
+        author_elements.append({"type": "mrkdwn", "text": f"@{handle}  ·  {time_str}"})
         blocks.append({"type": "context", "elements": author_elements})
 
-        # 2. Section: Post text (sanitized)
+        # ── 3. Post text ──────────────────────────────────────────────
         sanitized_text = self._sanitize_text(snapshot.text)
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": sanitized_text}})
+        if sanitized_text.strip():
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": sanitized_text}})
 
-        # 3. Media: Images, videos, GIFs (up to 4)
+        # ── 4. Media ──────────────────────────────────────────────────
         for media in snapshot.media[:4]:
-            if media.type == "image":
+            if media.type == "image" and self._is_valid_url(media.url):
                 blocks.append(
                     {
                         "type": "image",
@@ -59,20 +82,22 @@ class XUnfurlBlocksBuilder:
                     }
                 )
             elif media.type == "video":
-                blocks.append(
-                    {
-                        "type": "image",
-                        "image_url": media.thumbnail_url or media.url,
-                        "alt_text": media.alt_text or "Video from X post",
-                    }
-                )
-                blocks.append(
-                    {
-                        "type": "context",
-                        "elements": [{"type": "mrkdwn", "text": "▶️ *Video* — watch on X"}],
-                    }
-                )
-            elif media.type == "gif":
+                thumb = media.thumbnail_url or media.url
+                if self._is_valid_url(thumb):
+                    blocks.append(
+                        {
+                            "type": "image",
+                            "image_url": thumb,
+                            "alt_text": media.alt_text or "Video thumbnail",
+                        }
+                    )
+                    blocks.append(
+                        {
+                            "type": "context",
+                            "elements": [{"type": "mrkdwn", "text": "▶️  *Video* — watch on X"}],
+                        }
+                    )
+            elif media.type == "gif" and self._is_valid_url(media.url):
                 blocks.append(
                     {
                         "type": "image",
@@ -81,72 +106,117 @@ class XUnfurlBlocksBuilder:
                     }
                 )
 
-        # 4. Context: Metrics
-        metrics = snapshot.metrics
-        metrics_parts = []
-        if metrics.replies:
-            metrics_parts.append(f"💬 {self._format_number(metrics.replies)}")
-        if metrics.reposts:
-            metrics_parts.append(f"🔁 {self._format_number(metrics.reposts)}")
-        if metrics.likes:
-            metrics_parts.append(f"❤️ {self._format_number(metrics.likes)}")
-        if metrics.views:
-            metrics_parts.append(f"👁 {self._format_number(metrics.views)}")
+        # ── 5. Metrics (2-column field grid) ──────────────────────────
+        metrics_fields = self._build_metrics_fields(snapshot.metrics)
+        if metrics_fields:
+            blocks.append({"type": "section", "fields": metrics_fields})
 
-        if metrics_parts:
-            blocks.append(
-                {
-                    "type": "context",
-                    "elements": [{"type": "mrkdwn", "text": " • ".join(metrics_parts)}],
-                }
-            )
-
-        # 5. Divider before replies
-        if snapshot.top_replies:
+        # ── 6. Top replies ────────────────────────────────────────────
+        valid_replies = snapshot.top_replies[:3]
+        if valid_replies:
             blocks.append({"type": "divider"})
+            for reply in valid_replies:
+                reply_handle = self._clean_handle(reply.author_handle)
+                badge = " ✓" if reply.verified else ""
+                reply_text = self._truncate(self._sanitize_text(reply.text), 200)
+                blocks.append(
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": (
+                                    f"💬  *{reply.author_name}*{badge}"
+                                    f"  @{reply_handle}\n{reply_text}"
+                                ),
+                            }
+                        ],
+                    }
+                )
 
-        # 6. Top replies (up to 3)
-        for reply in snapshot.top_replies[:3]:
-            reply_text = f"*{reply.author_name}* (@{reply.author_handle})"
-            if reply.verified:
-                reply_text += " ✓"
-            reply_text += f": {self._truncate(reply.text, 200)}"
-            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": reply_text}})
-
-        # 7. Grok summary (if present)
+        # ── 7. Grok summary ──────────────────────────────────────────
         if snapshot.summary:
+            blocks.append({"type": "divider"})
             blocks.append(
                 {
-                    "type": "context",
-                    "elements": [
-                        {"type": "mrkdwn", "text": f"🤖 *Grok summary:* {snapshot.summary}"}
-                    ],
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"✦  *Grok*\n{snapshot.summary}",
+                    },
                 }
             )
 
-        # 8. Actions: Open in X + optional Summarize with Grok
+        # ── 8. Actions ────────────────────────────────────────────────
         action_elements: list[dict[str, Any]] = [
             {
                 "type": "button",
-                "text": {"type": "plain_text", "text": "Open in X"},
+                "text": {"type": "plain_text", "text": "View on 𝕏", "emoji": True},
                 "url": canonical_url,
                 "action_id": "x_unfurl_open",
             }
         ]
-
         if not snapshot.summary:
             action_elements.append(
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Summarize with Grok"},
-                    "action_id": "x_unfurl_summarize",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "✦ Ask Grok",
+                        "emoji": True,
+                    },
+                    "action_id": "x_unfurl_ask_grok",
                     "value": canonical_url,
                 }
             )
-
         blocks.append({"type": "actions", "elements": action_elements})
 
+        # ── 9. Footer ─────────────────────────────────────────────────
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": "Powered by Grok  ·  x.ai"},
+                ],
+            }
+        )
+
         return blocks
+
+    # ── Helpers ────────────────────────────────────────────────────────
+
+    def _build_metrics_fields(self, metrics: XMetrics) -> list[dict[str, Any]]:
+        """Build section fields for a 2-column metrics grid.
+
+        Returns an empty list when all metrics are zero/None so the
+        caller can skip the section block entirely.
+        """
+        fields: list[dict[str, Any]] = []
+        if metrics.likes:
+            fields.append(
+                {"type": "mrkdwn", "text": f"❤️  *{self._format_number(metrics.likes)}*\nLikes"}
+            )
+        if metrics.reposts:
+            fields.append(
+                {"type": "mrkdwn", "text": f"🔄  *{self._format_number(metrics.reposts)}*\nReposts"}
+            )
+        if metrics.replies:
+            fields.append(
+                {"type": "mrkdwn", "text": f"💬  *{self._format_number(metrics.replies)}*\nReplies"}
+            )
+        if metrics.views:
+            fields.append(
+                {"type": "mrkdwn", "text": f"👁️  *{self._format_number(metrics.views)}*\nViews"}
+            )
+        return fields
+
+    def _is_valid_url(self, url: str | None) -> bool:
+        """Check if a URL is non-empty and uses http(s)."""
+        return url is not None and url.startswith(("http://", "https://"))
+
+    def _clean_handle(self, handle: str) -> str:
+        """Strip leading @ from handle if xAI included it."""
+        return handle.lstrip("@")
 
     def _sanitize_text(self, text: str) -> str:
         """Sanitize text to prevent Slack mention spam.
@@ -157,11 +227,9 @@ class XUnfurlBlocksBuilder:
         Returns:
             Sanitized text safe for Slack
         """
-        # Escape @channel, @here, @everyone with zero-width space
         text = text.replace("@channel", "@\u200bchannel")
         text = text.replace("@here", "@\u200bhere")
         text = text.replace("@everyone", "@\u200beveryone")
-        # Truncate
         return self._truncate(text, 3000)
 
     def _truncate(self, text: str, max_length: int) -> str:
@@ -188,7 +256,6 @@ class XUnfurlBlocksBuilder:
             Formatted time string
         """
         now = datetime.now(UTC)
-        # Ensure both datetimes are tz-aware for comparison
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
         delta = now - dt

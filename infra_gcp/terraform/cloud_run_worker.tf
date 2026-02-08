@@ -16,7 +16,7 @@ resource "google_cloud_run_v2_service" "worker" {
     max_instance_request_concurrency = 1 # Process one job per instance
 
     scaling {
-      min_instance_count = 0
+      min_instance_count = 1
       max_instance_count = 3
     }
 
