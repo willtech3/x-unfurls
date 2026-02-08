@@ -52,6 +52,12 @@ def get_job_queue() -> JobQueueProducer:
 # X domain patterns
 X_DOMAINS = {"x.com", "twitter.com", "www.x.com", "www.twitter.com"}
 STATUS_PATTERN = re.compile(r"/(?:status|statuses)/(\d+)")
+# Slack wraps URLs as <URL> or <URL|display> in message text
+SLACK_URL_PATTERN = re.compile(r"<(https?://[^|>]+)(?:\|[^>]*)?>")
+# X/Twitter URL pattern for matching in message text
+X_URL_PATTERN = re.compile(
+    r"https?://(?:www\.)?(?:x\.com|twitter\.com)/\w+/status(?:es)?/\d+"
+)
 
 
 def validate_slack_signature(
@@ -188,6 +194,8 @@ async def slack_events(request: Request) -> dict[str, Any]:
 
         if event.get("type") == "link_shared":
             await handle_link_shared(payload, event)
+        elif event.get("type") == "message" and not event.get("subtype"):
+            await handle_message(payload, event)
 
     return {"ok": True}
 
@@ -242,6 +250,82 @@ async def handle_link_shared(payload: dict[str, Any], event: dict[str, Any]) -> 
             logging.INFO,
             "Enqueued X unfurl job",
             event="job_enqueued",
+            job_id=job.job_id,
+            status_id=status_id,
+            message_id=message_id,
+        )
+
+
+def extract_urls_from_text(text: str) -> list[str]:
+    """Extract X/Twitter URLs from Slack message text.
+
+    Slack wraps URLs as <URL> or <URL|display> in message text.
+
+    Args:
+        text: Raw Slack message text
+
+    Returns:
+        List of X/Twitter URLs found in the text
+    """
+    urls = SLACK_URL_PATTERN.findall(text)
+    return [url for url in urls if is_x_link(url) and extract_status_id(url)]
+
+
+async def handle_message(payload: dict[str, Any], event: dict[str, Any]) -> None:
+    """Handle message events by detecting X links and enqueueing unfurl jobs.
+
+    Only processes regular user messages (no subtypes) to avoid bot loops.
+
+    Args:
+        payload: Full Slack event payload
+        event: The message event
+    """
+    # Skip bot messages to prevent infinite loops
+    if event.get("bot_id"):
+        return
+
+    text = event.get("text", "")
+    if not text:
+        return
+
+    x_urls = extract_urls_from_text(text)
+    if not x_urls:
+        return
+
+    team_id = payload.get("team_id", "")
+    channel_id = event.get("channel", "")
+    message_ts = event.get("ts", "")
+
+    # Deduplicate by status_id to avoid multiple jobs for the same post
+    seen_status_ids: set[str] = set()
+
+    for url in x_urls:
+        status_id = extract_status_id(url)
+        if not status_id or status_id in seen_status_ids:
+            continue
+        seen_status_ids.add(status_id)
+
+        canonical_url = canonicalize_url(url, status_id)
+
+        job = XUnfurlJobDto(
+            job_id=str(uuid.uuid4()),
+            channel_id=channel_id,
+            message_ts=message_ts,
+            team_id=team_id,
+            original_url=url,
+            canonical_url=canonical_url,
+            status_id=status_id,
+            action="generate",
+            trace_id=str(uuid.uuid4()),
+        )
+
+        message_id = await get_job_queue().enqueue_job(job)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "Enqueued X unfurl job from message",
+            event="message_job_enqueued",
             job_id=job.job_id,
             status_id=status_id,
             message_id=message_id,

@@ -77,10 +77,20 @@ class UnfurlCall:
 
 
 @dataclass
+class PostMessageCall:
+    """Record of a single post_message invocation."""
+
+    channel_id: str
+    blocks: list[dict[str, Any]]
+    text: str
+
+
+@dataclass
 class FakeSlackUnfurlRepository:
     """In-memory fake that satisfies the SlackUnfurlRepository Protocol."""
 
     unfurl_calls: list[UnfurlCall] = field(default_factory=list)
+    post_message_calls: list[PostMessageCall] = field(default_factory=list)
     should_raise: Exception | None = None
 
     async def unfurl_links(
@@ -90,6 +100,16 @@ class FakeSlackUnfurlRepository:
         unfurls: dict[str, dict[str, Any]],
     ) -> None:
         self.unfurl_calls.append(UnfurlCall(channel_id, message_ts, unfurls))
+        if self.should_raise is not None:
+            raise self.should_raise
+
+    async def post_message(
+        self,
+        channel_id: str,
+        blocks: list[dict[str, Any]],
+        text: str = "",
+    ) -> None:
+        self.post_message_calls.append(PostMessageCall(channel_id, blocks, text))
         if self.should_raise is not None:
             raise self.should_raise
 

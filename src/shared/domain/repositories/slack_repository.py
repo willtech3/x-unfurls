@@ -18,3 +18,15 @@ class SlackUnfurlRepository(Protocol):
             unfurls: Mapping of URL to unfurl content (blocks)
         """
         ...
+
+    async def post_message(
+        self, channel_id: str, blocks: list[dict[str, Any]], text: str = ""
+    ) -> None:
+        """Post a message with blocks to a channel.
+
+        Args:
+            channel_id: Channel to post to
+            blocks: Slack Block Kit blocks
+            text: Fallback text for notifications
+        """
+        ...

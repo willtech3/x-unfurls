@@ -58,6 +58,9 @@ class FakeSlackClient:
     async def unfurl_links(self, channel_id: str, message_ts: str, unfurls: Any) -> None:
         pass
 
+    async def post_message(self, channel_id: str, blocks: Any, text: str = "") -> None:
+        pass
+
     async def close(self) -> None:
         self.close_calls += 1
 

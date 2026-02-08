@@ -67,6 +67,46 @@ class SlackHttpClient(SlackUnfurlRepository):
             url_count=len(unfurls),
         )
 
+    async def post_message(
+        self, channel_id: str, blocks: list[dict[str, Any]], text: str = ""
+    ) -> None:
+        """Post a message with blocks to a channel using chat.postMessage.
+
+        Args:
+            channel_id: Channel to post to
+            blocks: Slack Block Kit blocks
+            text: Fallback text for notifications
+        """
+        payload: dict[str, Any] = {
+            "channel": channel_id,
+            "blocks": blocks,
+            "text": text or "X post preview",
+        }
+
+        response = await self._client.post("/chat.postMessage", json=payload)
+        response.raise_for_status()
+
+        data = response.json()
+        if not data.get("ok"):
+            error = data.get("error", "unknown_error")
+            log_event(
+                logger,
+                logging.ERROR,
+                "Slack API error",
+                event="slack_post_message_error",
+                error=error,
+                channel=channel_id,
+            )
+            raise RuntimeError(f"Slack API error: {error}")
+
+        log_event(
+            logger,
+            logging.INFO,
+            "Successfully posted message",
+            event="post_message_success",
+            channel=channel_id,
+        )
+
     async def close(self) -> None:
         """Close the HTTP client."""
         await self._client.aclose()

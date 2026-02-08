@@ -44,9 +44,9 @@ class XUnfurlService:
         # Build Slack blocks deterministically
         blocks = self._blocks_builder.build_unfurl_blocks(snapshot, job.canonical_url)
 
-        # Attach unfurl to original message
-        await self._slack_repo.unfurl_links(
+        # Post rich preview as a channel message
+        await self._slack_repo.post_message(
             channel_id=job.channel_id,
-            message_ts=job.message_ts,
-            unfurls={job.canonical_url: {"blocks": blocks}},
+            blocks=blocks,
+            text=f"X post by @{snapshot.author_handle}",
         )
