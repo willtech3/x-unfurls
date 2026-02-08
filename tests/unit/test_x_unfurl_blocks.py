@@ -80,10 +80,10 @@ def test_build_unfurl_blocks_basic(
     assert len(blocks) > 0
     block_types = [b["type"] for b in blocks]
 
-    # Layout: header, section (author), section (text), image, context (metrics),
+    # Layout: header, context (author), section (text), image, context (metrics),
     # divider, context (reply), divider, section (summary), actions, context (footer)
     assert block_types[0] == "header"
-    assert block_types[1] == "section"  # author line
+    assert block_types[1] == "context"  # author line
     assert "section" in block_types
     assert "image" in block_types
     assert "divider" in block_types
@@ -109,13 +109,14 @@ def test_header_no_badge_when_unverified(builder: XUnfurlBlocksBuilder) -> None:
     assert "✓" not in header["text"]["text"]
 
 
-def test_author_section_contains_handle(builder: XUnfurlBlocksBuilder) -> None:
-    """Author section (second block) should contain handle and timestamp."""
+def test_author_context_contains_handle(builder: XUnfurlBlocksBuilder) -> None:
+    """Author context (second block) should contain handle and timestamp."""
     snap = _make_snapshot(author_handle="elonmusk")
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     author = blocks[1]
-    assert author["type"] == "section"
-    assert "@elonmusk" in author["text"]["text"]
+    assert author["type"] == "context"
+    text = author["elements"][-1]["text"]
+    assert "@elonmusk" in text
 
 
 def test_footer_present(builder: XUnfurlBlocksBuilder) -> None:
@@ -325,26 +326,28 @@ def test_invalid_media_url_skipped(builder: XUnfurlBlocksBuilder) -> None:
 def test_author_avatar_displayed(builder: XUnfurlBlocksBuilder) -> None:
     snap = _make_snapshot(author_avatar_url="https://x.co/avatar.jpg", author_name="Jane")
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    author_block = blocks[1]  # header is [0], author section is [1]
-    assert "accessory" in author_block
-    assert author_block["accessory"]["type"] == "image"
-    assert author_block["accessory"]["image_url"] == "https://x.co/avatar.jpg"
-    assert author_block["accessory"]["alt_text"] == "Jane avatar"
+    author_block = blocks[1]  # header is [0], author context is [1]
+    img_elems = [e for e in author_block["elements"] if e.get("type") == "image"]
+    assert len(img_elems) == 1
+    assert img_elems[0]["image_url"] == "https://x.co/avatar.jpg"
+    assert img_elems[0]["alt_text"] == "Jane avatar"
 
 
-def test_missing_avatar_no_accessory(builder: XUnfurlBlocksBuilder) -> None:
+def test_missing_avatar_no_image_element(builder: XUnfurlBlocksBuilder) -> None:
     snap = _make_snapshot(author_avatar_url=None)
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     author_block = blocks[1]
-    assert "accessory" not in author_block
+    img_elems = [e for e in author_block["elements"] if e.get("type") == "image"]
+    assert len(img_elems) == 0
 
 
-def test_invalid_avatar_url_no_accessory(builder: XUnfurlBlocksBuilder) -> None:
-    """Invalid avatar URLs should not produce an accessory image."""
+def test_invalid_avatar_url_no_image_element(builder: XUnfurlBlocksBuilder) -> None:
+    """Invalid avatar URLs should not produce an image element."""
     snap = _make_snapshot(author_avatar_url="not-a-url")
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     author_block = blocks[1]
-    assert "accessory" not in author_block
+    img_elems = [e for e in author_block["elements"] if e.get("type") == "image"]
+    assert len(img_elems) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +360,9 @@ def test_handle_at_prefix_stripped(builder: XUnfurlBlocksBuilder) -> None:
     snap = _make_snapshot(author_handle="@elonmusk")
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     author_block = blocks[1]
-    author_text = author_block["text"]["text"]
+    author_text = [
+        e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
+    ][0]
     assert "@elonmusk" in author_text
     assert "@@elonmusk" not in author_text
 
@@ -459,7 +464,10 @@ def test_recent_post_shows_relative_time(builder: XUnfurlBlocksBuilder) -> None:
     recent = datetime.now(UTC) - timedelta(minutes=5)
     snap = _make_snapshot(created_at=recent)
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    author_text = blocks[1]["text"]["text"]
+    author_block = blocks[1]
+    author_text = [
+        e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
+    ][0]
     assert "5m ago" in author_text
 
 
@@ -468,7 +476,10 @@ def test_old_post_shows_absolute_date(builder: XUnfurlBlocksBuilder) -> None:
     old = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
     snap = _make_snapshot(created_at=old)
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    author_text = blocks[1]["text"]["text"]
+    author_block = blocks[1]
+    author_text = [
+        e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
+    ][0]
     assert "Jan 15, 2024" in author_text
 
 
@@ -479,7 +490,10 @@ def test_hours_ago_shown_correctly(builder: XUnfurlBlocksBuilder) -> None:
     hours_ago = datetime.now(UTC) - timedelta(hours=3)
     snap = _make_snapshot(created_at=hours_ago)
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    author_text = blocks[1]["text"]["text"]
+    author_block = blocks[1]
+    author_text = [
+        e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
+    ][0]
     assert "3h ago" in author_text
 
 
