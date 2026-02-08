@@ -67,17 +67,29 @@ class XUnfurlService:
 
         blocks = self._blocks_builder.build_unfurl_blocks(snapshot, job.canonical_url)
 
-        await self._slack_repo.unfurl_links(
-            channel_id=job.channel_id,
-            message_ts=job.message_ts,
-            unfurls={
-                job.original_url: {
-                    "blocks": blocks,
-                    "text": f"X post by @{snapshot.author_handle.lstrip('@')}",
-                }
-            },
-        )
-        logger.info("Unfurl posted for job %s", job.job_id)
+        unfurl_text = f"X post by @{snapshot.author_handle.lstrip('@')}"
+        unfurls = {job.original_url: {"blocks": blocks, "text": unfurl_text}}
+
+        try:
+            await self._slack_repo.unfurl_links(
+                channel_id=job.channel_id,
+                message_ts=job.message_ts,
+                unfurls=unfurls,
+            )
+            logger.info("Inline unfurl posted for job %s", job.job_id)
+        except Exception:
+            logger.warning(
+                "Inline unfurl failed for job %s; falling back to post_message",
+                job.job_id,
+                exc_info=True,
+            )
+            await self._slack_repo.post_message(
+                channel_id=job.channel_id,
+                blocks=blocks,
+                text=unfurl_text,
+                color=self._blocks_builder.ACCENT_COLOR,
+            )
+            logger.info("Fallback unfurl message posted for job %s", job.job_id)
 
     async def _process_ask_grok(self, job: XUnfurlJobDto, status_ref: XStatusRef) -> None:
         """Process an 'ask_grok' follow-up question.

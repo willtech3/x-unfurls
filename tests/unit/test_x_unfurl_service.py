@@ -213,6 +213,30 @@ class TestServiceParallelThumbnails:
         assert len(fake_slack.unfurl_calls) == 1
         assert len(fake_slack.post_message_calls) == 0
 
+    async def test_unfurl_failure_falls_back_to_post_message(
+        self,
+        fake_x_repo: FakeXRepository,
+        fake_slack: FakeSlackUnfurlRepository,
+        make_post_snapshot: Callable[..., XPostSnapshot],
+        make_job_dto: Callable,
+    ) -> None:
+        fake_x_repo.default_snapshot = make_post_snapshot()
+        fake_slack.unfurl_should_raise = ValueError("cannot_unfurl_url")
+
+        service = XUnfurlService(
+            x_repo=fake_x_repo,
+            slack_repo=fake_slack,
+            blocks_builder=XUnfurlBlocksBuilder(),
+        )
+
+        await service.process_unfurl_job(make_job_dto())
+
+        assert len(fake_slack.unfurl_calls) == 1
+        assert len(fake_slack.post_message_calls) == 1
+        posted = fake_slack.post_message_calls[0]
+        assert posted.text.startswith("X post by @")
+        assert posted.color == XUnfurlBlocksBuilder.ACCENT_COLOR
+
     async def test_summarize_action_still_uses_thumbnails(
         self,
         fake_x_repo: FakeXRepository,
