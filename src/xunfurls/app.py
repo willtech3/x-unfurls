@@ -44,7 +44,7 @@ async def create_managed_unfurl_service() -> AsyncIterator[XUnfurlService]:
             x_repo=cached,
             slack_repo=slack_client,
             blocks_builder=blocks_builder,
-            thumbnail_client=fxtwitter_client,
+            thumbnail_repo=fxtwitter_client,
         )
         yield service
     finally:

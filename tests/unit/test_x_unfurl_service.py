@@ -47,9 +47,7 @@ class TestApplyVideoThumbnails:
 
         assert snapshot.media[0].thumbnail_url == "https://new-thumb.jpg"
 
-    def test_skips_image_media(
-        self, make_post_snapshot: Callable[..., XPostSnapshot]
-    ) -> None:
+    def test_skips_image_media(self, make_post_snapshot: Callable[..., XPostSnapshot]) -> None:
         image = XMedia(type="image", url="img.jpg")
         video = XMedia(type="video", url="vid.mp4", thumbnail_url="https://old.jpg")
         snapshot = make_post_snapshot(media=[image, video])
@@ -59,9 +57,7 @@ class TestApplyVideoThumbnails:
         assert snapshot.media[0].thumbnail_url is None  # image unchanged
         assert snapshot.media[1].thumbnail_url == "https://new.jpg"
 
-    def test_handles_gif_type(
-        self, make_post_snapshot: Callable[..., XPostSnapshot]
-    ) -> None:
+    def test_handles_gif_type(self, make_post_snapshot: Callable[..., XPostSnapshot]) -> None:
         gif = XMedia(type="gif", url="anim.mp4", thumbnail_url="https://old-gif.jpg")
         snapshot = make_post_snapshot(media=[gif])
 
@@ -101,9 +97,7 @@ class TestApplyVideoThumbnails:
 
         assert snapshot.media[0].thumbnail_url == "https://new1.jpg"
 
-    def test_no_media(
-        self, make_post_snapshot: Callable[..., XPostSnapshot]
-    ) -> None:
+    def test_no_media(self, make_post_snapshot: Callable[..., XPostSnapshot]) -> None:
         snapshot = make_post_snapshot(media=[])
         _apply_video_thumbnails(snapshot, ["https://orphan.jpg"])
         assert snapshot.media == []
@@ -131,7 +125,7 @@ class TestServiceParallelThumbnails:
             x_repo=fake_x_repo,
             slack_repo=fake_slack,
             blocks_builder=XUnfurlBlocksBuilder(),
-            thumbnail_client=thumb_client,
+            thumbnail_repo=thumb_client,
         )
 
         job = make_job_dto(canonical_url="https://x.com/user/status/42")
@@ -140,6 +134,9 @@ class TestServiceParallelThumbnails:
         assert thumb_client.calls == ["https://x.com/user/status/42"]
         # Thumbnail should be overwritten
         assert snapshot.media[0].thumbnail_url == "https://fxtw-thumb.jpg"
+        assert len(fake_slack.unfurl_calls) == 1
+        assert fake_slack.unfurl_calls[0].message_ts == job.message_ts
+        assert set(fake_slack.unfurl_calls[0].unfurls) == {job.original_url}
 
     async def test_thumbnail_client_failure_falls_back_to_xai(
         self,
@@ -157,7 +154,7 @@ class TestServiceParallelThumbnails:
             x_repo=fake_x_repo,
             slack_repo=fake_slack,
             blocks_builder=XUnfurlBlocksBuilder(),
-            thumbnail_client=thumb_client,
+            thumbnail_repo=thumb_client,
         )
 
         job = make_job_dto()
@@ -165,6 +162,32 @@ class TestServiceParallelThumbnails:
 
         # Original xAI thumbnail preserved
         assert snapshot.media[0].thumbnail_url == "https://xai-thumb.jpg"
+        assert len(fake_slack.unfurl_calls) == 1
+
+    async def test_thumbnail_client_exception_does_not_fail_unfurl(
+        self,
+        fake_x_repo: FakeXRepository,
+        fake_slack: FakeSlackUnfurlRepository,
+        make_post_snapshot: Callable[..., XPostSnapshot],
+        make_job_dto: Callable,
+    ) -> None:
+        video = XMedia(type="video", url="vid.mp4", thumbnail_url="https://xai-thumb.jpg")
+        snapshot = make_post_snapshot(media=[video])
+        fake_x_repo.default_snapshot = snapshot
+
+        thumb_client = FakeThumbnailClient(should_raise=RuntimeError("thumbnail API down"))
+        service = XUnfurlService(
+            x_repo=fake_x_repo,
+            slack_repo=fake_slack,
+            blocks_builder=XUnfurlBlocksBuilder(),
+            thumbnail_repo=thumb_client,
+        )
+
+        await service.process_unfurl_job(make_job_dto())
+
+        # Falls back to existing thumbnail and still unfurls.
+        assert snapshot.media[0].thumbnail_url == "https://xai-thumb.jpg"
+        assert len(fake_slack.unfurl_calls) == 1
 
     async def test_no_thumbnail_client_works_normally(
         self,
@@ -187,7 +210,8 @@ class TestServiceParallelThumbnails:
         await service.process_unfurl_job(job)
 
         # Should complete without error
-        assert len(fake_slack.post_message_calls) == 1
+        assert len(fake_slack.unfurl_calls) == 1
+        assert len(fake_slack.post_message_calls) == 0
 
     async def test_summarize_action_still_uses_thumbnails(
         self,
@@ -205,13 +229,14 @@ class TestServiceParallelThumbnails:
             x_repo=fake_x_repo,
             slack_repo=fake_slack,
             blocks_builder=XUnfurlBlocksBuilder(),
-            thumbnail_client=thumb_client,
+            thumbnail_repo=thumb_client,
         )
 
         job = make_job_dto(action="summarize")
         await service.process_unfurl_job(job)
 
         assert snapshot.media[0].thumbnail_url == "https://fxtw.jpg"
+        assert len(fake_slack.unfurl_calls) == 1
 
     async def test_ask_grok_action_does_not_use_thumbnails(
         self,
@@ -225,7 +250,7 @@ class TestServiceParallelThumbnails:
             x_repo=fake_x_repo,
             slack_repo=fake_slack,
             blocks_builder=XUnfurlBlocksBuilder(),
-            thumbnail_client=thumb_client,
+            thumbnail_repo=thumb_client,
         )
 
         job = make_job_dto(action="ask_grok", user_prompt="What is this?", user_id="U001")
@@ -233,3 +258,6 @@ class TestServiceParallelThumbnails:
 
         # Thumbnail client should NOT be called for ask_grok
         assert thumb_client.calls == []
+        # Ask-grok answers are threaded replies, not unfurl attachments.
+        assert len(fake_slack.unfurl_calls) == 0
+        assert len(fake_slack.post_message_calls) == 1
