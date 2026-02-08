@@ -47,9 +47,7 @@ class TestApplyVideoThumbnails:
 
         assert snapshot.media[0].thumbnail_url == "https://new-thumb.jpg"
 
-    def test_skips_image_media(
-        self, make_post_snapshot: Callable[..., XPostSnapshot]
-    ) -> None:
+    def test_skips_image_media(self, make_post_snapshot: Callable[..., XPostSnapshot]) -> None:
         image = XMedia(type="image", url="img.jpg")
         video = XMedia(type="video", url="vid.mp4", thumbnail_url="https://old.jpg")
         snapshot = make_post_snapshot(media=[image, video])
@@ -59,9 +57,7 @@ class TestApplyVideoThumbnails:
         assert snapshot.media[0].thumbnail_url is None  # image unchanged
         assert snapshot.media[1].thumbnail_url == "https://new.jpg"
 
-    def test_handles_gif_type(
-        self, make_post_snapshot: Callable[..., XPostSnapshot]
-    ) -> None:
+    def test_handles_gif_type(self, make_post_snapshot: Callable[..., XPostSnapshot]) -> None:
         gif = XMedia(type="gif", url="anim.mp4", thumbnail_url="https://old-gif.jpg")
         snapshot = make_post_snapshot(media=[gif])
 
@@ -101,9 +97,7 @@ class TestApplyVideoThumbnails:
 
         assert snapshot.media[0].thumbnail_url == "https://new1.jpg"
 
-    def test_no_media(
-        self, make_post_snapshot: Callable[..., XPostSnapshot]
-    ) -> None:
+    def test_no_media(self, make_post_snapshot: Callable[..., XPostSnapshot]) -> None:
         snapshot = make_post_snapshot(media=[])
         _apply_video_thumbnails(snapshot, ["https://orphan.jpg"])
         assert snapshot.media == []

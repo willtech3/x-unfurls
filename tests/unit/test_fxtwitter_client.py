@@ -128,9 +128,7 @@ class TestFxTwitterClientFetch:
                 200,
                 json={
                     "tweet": {
-                        "media": {
-                            "videos": [{"thumbnail_url": "https://pbs.twimg.com/thumb.jpg"}]
-                        }
+                        "media": {"videos": [{"thumbnail_url": "https://pbs.twimg.com/thumb.jpg"}]}
                     }
                 },
             )
@@ -141,9 +139,7 @@ class TestFxTwitterClientFetch:
 
     @respx.mock
     async def test_http_error_returns_empty(self, fxtw: FxTwitterClient) -> None:
-        respx.get(f"{API_BASE}/testuser/status/12345").mock(
-            return_value=httpx.Response(500)
-        )
+        respx.get(f"{API_BASE}/testuser/status/12345").mock(return_value=httpx.Response(500))
         result = await fxtw.fetch_video_thumbnails("https://x.com/testuser/status/12345")
         assert result == []
         await fxtw.close()
