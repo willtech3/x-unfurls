@@ -12,11 +12,16 @@ from xunfurls.infrastructure.gcp.xai_client import (
 
 
 def _make_xai_response(content_dict: dict | None = None, content_str: str | None = None) -> dict:
-    """Build a well-formed xAI API response wrapping the given content."""
+    """Build a well-formed xAI Responses API response wrapping the given content."""
     if content_str is None:
         content_str = json.dumps(content_dict or {})
     return {
-        "choices": [{"message": {"content": content_str}}],
+        "output": [
+            {
+                "content": [{"type": "output_text", "text": content_str}],
+                "id": "msg_test",
+            }
+        ],
     }
 
 
@@ -140,9 +145,9 @@ class TestValidResponseParsing:
 
 
 class TestMalformedResponses:
-    def test_no_choices_raises_value_error(self):
-        with pytest.raises(ValueError, match="No choices"):
-            parse_xai_response({"choices": []})
+    def test_no_output_raises_value_error(self):
+        with pytest.raises(ValueError, match="No text output"):
+            parse_xai_response({"output": []})
 
     def test_non_json_content_returns_fallback(self):
         resp = _make_xai_response(content_str="This is not JSON at all")
@@ -150,10 +155,10 @@ class TestMalformedResponses:
         assert snap.author_name == "Unknown"
         assert snap.text == "Preview unavailable"
 
-    def test_empty_content_returns_fallback(self):
+    def test_empty_content_raises_value_error(self):
         resp = _make_xai_response(content_str="")
-        snap = parse_xai_response(resp)
-        assert snap.author_name == "Unknown"
+        with pytest.raises(ValueError, match="No text output"):
+            parse_xai_response(resp)
 
     def test_missing_required_media_fields_returns_fallback(self):
         data = {"media": [{"not_type": "image"}]}

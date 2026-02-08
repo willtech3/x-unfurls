@@ -21,17 +21,28 @@ from xunfurls.domain.repositories.x_repository import FetchMode, XRepository
 logger = logging.getLogger(__name__)
 
 
+def _extract_text_from_responses_api(response: dict[str, Any]) -> str:
+    """Extract text content from Responses API output.
+
+    The Responses API returns an output array containing tool calls and
+    output_text items. We find the last output_text item.
+    """
+    for item in reversed(response.get("output", [])):
+        if isinstance(item.get("content"), list):
+            for block in item["content"]:
+                if block.get("type") == "output_text":
+                    return str(block.get("text", ""))
+    return ""
+
+
 def parse_xai_response(response: dict[str, Any]) -> XPostSnapshot:  # noqa: C901
-    """Parse xAI API response into XPostSnapshot.
+    """Parse xAI Responses API response into XPostSnapshot.
 
     Extracted as module-level function for testability.
     """
-    choices = response.get("choices", [])
-    if not choices:
-        raise ValueError("No choices in xAI response")
-
-    message = choices[0].get("message", {})
-    content = message.get("content", "")
+    content = _extract_text_from_responses_api(response)
+    if not content:
+        raise ValueError("No text output in xAI response")
 
     try:
         data = json.loads(content)
@@ -232,7 +243,7 @@ CRITICAL SAFETY INSTRUCTIONS:
         return base_prompt
 
     async def _call_xai(self, prompt: str, mode: FetchMode) -> dict[str, Any]:
-        """Call xAI chat API with X Search tool.
+        """Call xAI Responses API with X Search tool.
 
         Args:
             prompt: Prompt for the model
@@ -242,13 +253,14 @@ CRITICAL SAFETY INSTRUCTIONS:
             API response data
         """
         payload = {
-            "model": "grok-2-latest",  # Fast model tuned for tool use
-            "messages": [{"role": "user", "content": prompt}],
-            "tools": [{"type": "x_search"}],  # Enable X Search tool
-            "temperature": 0.0,  # Deterministic output
+            "model": "grok-4-0709",
+            "input": [{"role": "user", "content": prompt}],
+            "tools": [{"type": "x_search"}],
+            "temperature": 0.0,
+            "store": False,
         }
 
-        response = await self._client.post("/chat/completions", json=payload)
+        response = await self._client.post("/responses", json=payload)
         response.raise_for_status()
 
         data: dict[str, Any] = response.json()
