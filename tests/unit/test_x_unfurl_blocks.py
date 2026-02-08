@@ -263,6 +263,22 @@ def test_video_media_shows_thumbnail(builder: XUnfurlBlocksBuilder) -> None:
     assert any("Video" in t for t in texts)
 
 
+def test_video_stream_thumbnail_rejected(builder: XUnfurlBlocksBuilder) -> None:
+    """Video-stream URLs with codec paths (e.g. /vid/avc1/) should be rejected as thumbnails."""
+    snap = _make_snapshot(
+        media=[
+            XMedia(
+                type="video",
+                url="https://x.co/v.mp4",
+                thumbnail_url="https://video.twimg.com/ext_tw_video_thumb/123/pu/vid/avc1/320x568/img.jpg",
+            )
+        ]
+    )
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    imgs = [b for b in blocks if b["type"] == "image"]
+    assert len(imgs) == 0
+
+
 def test_video_without_thumbnail_skips_image_block(builder: XUnfurlBlocksBuilder) -> None:
     snap = _make_snapshot(
         media=[XMedia(type="video", url="https://x.co/video.mp4", thumbnail_url=None)]

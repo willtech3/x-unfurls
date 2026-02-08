@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 _PERMANENT_SLACK_ERRORS = frozenset(
     {
         "invalid_blocks",
+        "invalid_attachments",
         "channel_not_found",
         "not_in_channel",
         "invalid_auth",
