@@ -6,14 +6,17 @@ import asyncio
 import logging
 from typing import Any
 
+import httpx
+
 from shared.domain.dtos import XUnfurlJobDto
 from shared.domain.repositories.slack_repository import SlackUnfurlRepository
 from xunfurls.application.presenters.x_unfurl_blocks import XUnfurlBlocksBuilder
-from xunfurls.domain.entities import XPostSnapshot, XStatusRef
-from xunfurls.domain.repositories.video_thumbnail_repository import VideoThumbnailRepository
+from xunfurls.domain.entities import XMedia, XPostSnapshot, XStatusRef
 from xunfurls.domain.repositories.x_repository import FetchMode, XRepository
 
 logger = logging.getLogger(__name__)
+
+_THUMB_VALIDATE_TIMEOUT = 3.0
 
 
 class XUnfurlService:
@@ -24,12 +27,10 @@ class XUnfurlService:
         x_repo: XRepository,
         slack_repo: SlackUnfurlRepository,
         blocks_builder: XUnfurlBlocksBuilder,
-        thumbnail_repo: VideoThumbnailRepository | None = None,
     ) -> None:
         self._x_repo = x_repo
         self._slack_repo = slack_repo
         self._blocks_builder = blocks_builder
-        self._thumbnail_repo = thumbnail_repo
 
     async def process_unfurl_job(self, job: XUnfurlJobDto) -> None:
         """Process an unfurl job.
@@ -56,14 +57,8 @@ class XUnfurlService:
 
         logger.info("Processing standard unfurl job %s (action=%s)", job.job_id, job.action)
 
-        if self._thumbnail_repo is not None:
-            snapshot, thumbnails = await asyncio.gather(
-                self._x_repo.fetch_post_snapshot(status_ref, mode),
-                self._fetch_thumbnails_safe(job.canonical_url, job.status_id),
-            )
-            _apply_video_thumbnails(snapshot, thumbnails)
-        else:
-            snapshot = await self._x_repo.fetch_post_snapshot(status_ref, mode)
+        snapshot = await self._x_repo.fetch_post_snapshot(status_ref, mode)
+        await _validate_video_thumbnails(snapshot)
 
         blocks = self._blocks_builder.build_unfurl_blocks(snapshot, job.canonical_url)
 
@@ -108,21 +103,6 @@ class XUnfurlService:
         )
         logger.info("Ask-grok reply posted for job %s", job.job_id)
 
-    async def _fetch_thumbnails_safe(self, canonical_url: str, status_id: str) -> list[str]:
-        """Fetch thumbnails and degrade to empty list on non-critical failures."""
-        if self._thumbnail_repo is None:
-            return []
-
-        try:
-            return await self._thumbnail_repo.fetch_video_thumbnails(canonical_url)
-        except Exception:
-            logger.warning(
-                "Thumbnail enrichment failed for status_id=%s; continuing with source thumbnail",
-                status_id,
-                exc_info=True,
-            )
-            return []
-
     @staticmethod
     def _build_ask_grok_reply_blocks(
         user_id: str, question: str, answer: str
@@ -157,21 +137,32 @@ class XUnfurlService:
         return blocks
 
 
-def _apply_video_thumbnails(snapshot: XPostSnapshot, thumbnails: list[str]) -> None:
-    """Overwrite video media thumbnail URLs with FxTwitter results.
+async def _validate_video_thumbnails(snapshot: XPostSnapshot) -> None:
+    """HEAD-check video thumbnail URLs; null out any that don't return 200.
 
-    Matches thumbnails to video media items by position. Only overwrites
-    if FxTwitter returned a non-empty list.
+    Prevents Slack ``invalid_attachments`` errors caused by dead thumbnail
+    URLs from xAI.  Runs all checks concurrently; adds ~100ms overhead.
     """
-    if not thumbnails:
+    video_media = [m for m in snapshot.media if m.type in ("video", "gif") and m.thumbnail_url]
+    if not video_media:
         return
 
-    video_indices = [i for i, m in enumerate(snapshot.media) if m.type in ("video", "gif")]
-    for idx, thumb_url in zip(video_indices, thumbnails, strict=False):
-        logger.debug(
-            "Replacing video thumbnail [%d]: %s -> %s",
-            idx,
-            snapshot.media[idx].thumbnail_url,
-            thumb_url,
-        )
-        snapshot.media[idx].thumbnail_url = thumb_url
+    async with httpx.AsyncClient(timeout=_THUMB_VALIDATE_TIMEOUT) as client:
+        await asyncio.gather(*[_check_thumbnail(client, m) for m in video_media])
+
+
+async def _check_thumbnail(client: httpx.AsyncClient, media: XMedia) -> None:
+    """HEAD-check a single thumbnail URL; null it out on failure."""
+    assert media.thumbnail_url is not None  # caller guarantees this
+    try:
+        resp = await client.head(media.thumbnail_url, follow_redirects=True)
+        if resp.status_code != 200:
+            logger.info(
+                "Thumbnail HEAD returned %d, clearing: %s",
+                resp.status_code,
+                media.thumbnail_url,
+            )
+            media.thumbnail_url = None
+    except Exception:
+        logger.info("Thumbnail HEAD failed, clearing: %s", media.thumbnail_url, exc_info=True)
+        media.thumbnail_url = None
