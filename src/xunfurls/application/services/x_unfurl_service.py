@@ -51,7 +51,7 @@ class XUnfurlService:
         await self._slack_repo.post_message(
             channel_id=job.channel_id,
             blocks=blocks,
-            text=f"X post by @{snapshot.author_handle}",
+            text=f"X post by @{snapshot.author_handle.lstrip('@')}",
             color=self._blocks_builder.ACCENT_COLOR,
         )
 

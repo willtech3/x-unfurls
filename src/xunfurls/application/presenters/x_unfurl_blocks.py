@@ -51,26 +51,21 @@ class XUnfurlBlocksBuilder:
             }
         )
 
-        # ── 2. Author context: avatar + @handle · time ─────────────
+        # ── 2. Author line: @handle · time ───────────────────────────
         handle = self._clean_handle(snapshot.author_handle)
         time_str = self._format_timestamp(snapshot.created_at)
 
-        author_elements: list[dict[str, Any]] = []
+        author_block: dict[str, Any] = {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"@{handle}  ·  {time_str}"},
+        }
         if self._is_valid_url(snapshot.author_avatar_url):
-            author_elements.append(
-                {
-                    "type": "image",
-                    "image_url": snapshot.author_avatar_url,
-                    "alt_text": f"{snapshot.author_name} avatar",
-                }
-            )
-        author_elements.append(
-            {
-                "type": "mrkdwn",
-                "text": f"@{handle}  ·  {time_str}",
+            author_block["accessory"] = {
+                "type": "image",
+                "image_url": snapshot.author_avatar_url,
+                "alt_text": f"{snapshot.author_name} avatar",
             }
-        )
-        blocks.append({"type": "context", "elements": author_elements})
+        blocks.append(author_block)
 
         # ── 3. Post text ────────────────────────────────────────────
         sanitized_text = self._sanitize_text(snapshot.text)
