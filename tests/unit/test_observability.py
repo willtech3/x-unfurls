@@ -11,6 +11,22 @@ from shared.infrastructure.observability import (
 )
 
 
+class _CounterSpy:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, dict[str, str | int]]] = []
+
+    def add(self, value: int, attrs: dict[str, str | int]) -> None:
+        self.calls.append((value, attrs))
+
+
+class _HistogramSpy:
+    def __init__(self) -> None:
+        self.calls: list[tuple[float, dict[str, str | int]]] = []
+
+    def record(self, value: float, attrs: dict[str, str | int]) -> None:
+        self.calls.append((value, attrs))
+
+
 class TestObservabilitySetup:
     """ARCH-6: OTel initialization should work without GCP credentials."""
 
@@ -32,17 +48,50 @@ class TestObservabilitySetup:
 class TestMetricsRecording:
     """ARCH-6: Custom metrics should be recordable without error."""
 
-    def test_record_request_does_not_raise(self) -> None:
-        setup_observability(service_name="test-service", use_gcp_exporter=False)
+    def test_record_request_emits_counter_and_histogram(self, monkeypatch) -> None:
+        from shared.infrastructure import observability
+
+        counter = _CounterSpy()
+        histogram = _HistogramSpy()
+        monkeypatch.setattr(observability, "_request_counter", counter)
+        monkeypatch.setattr(observability, "_request_duration", histogram)
+
         record_request(method="POST", path="/pubsub", status_code=200, duration_ms=42.5)
 
-    def test_record_job_processed_does_not_raise(self) -> None:
-        setup_observability(service_name="test-service", use_gcp_exporter=False)
+        assert counter.calls == [
+            (1, {"http.method": "POST", "http.route": "/pubsub", "http.status_code": 200})
+        ]
+        assert histogram.calls == [
+            (42.5, {"http.method": "POST", "http.route": "/pubsub", "http.status_code": 200})
+        ]
+
+    def test_record_job_processed_emits_counter_and_histogram(self, monkeypatch) -> None:
+        from shared.infrastructure import observability
+
+        counter = _CounterSpy()
+        histogram = _HistogramSpy()
+        monkeypatch.setattr(observability, "_job_counter", counter)
+        monkeypatch.setattr(observability, "_job_duration", histogram)
+
         record_job_processed(action="generate", status="ok", duration_ms=1500.0)
 
-    def test_record_job_processed_error_status(self) -> None:
-        setup_observability(service_name="test-service", use_gcp_exporter=False)
+        expected_attrs = {"job.action": "generate", "job.status": "ok"}
+        assert counter.calls == [(1, expected_attrs)]
+        assert histogram.calls == [(1500.0, expected_attrs)]
+
+    def test_record_job_processed_emits_error_status(self, monkeypatch) -> None:
+        from shared.infrastructure import observability
+
+        counter = _CounterSpy()
+        histogram = _HistogramSpy()
+        monkeypatch.setattr(observability, "_job_counter", counter)
+        monkeypatch.setattr(observability, "_job_duration", histogram)
+
         record_job_processed(action="summarize", status="permanent_error", duration_ms=50.0)
+
+        expected_attrs = {"job.action": "summarize", "job.status": "permanent_error"}
+        assert counter.calls == [(1, expected_attrs)]
+        assert histogram.calls == [(50.0, expected_attrs)]
 
 
 class TestHealthCheckReady:

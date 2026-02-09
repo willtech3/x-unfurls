@@ -1,229 +1,201 @@
-"""Tests for XUnfurlService: parallel thumbnail fetching and merge logic."""
+"""Tests for XUnfurlService: HEAD thumbnail validation and unfurl flow."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+
+import httpx
+import respx
 
 from xunfurls.application.presenters.x_unfurl_blocks import XUnfurlBlocksBuilder
-from xunfurls.application.services.x_unfurl_service import XUnfurlService, _apply_video_thumbnails
+from xunfurls.application.services.x_unfurl_service import (
+    XUnfurlService,
+    _validate_video_thumbnails,
+)
 from xunfurls.domain.entities import XMedia, XPostSnapshot
 
 from .conftest import FakeSlackUnfurlRepository, FakeXRepository
 
 # ---------------------------------------------------------------------------
-# Fake thumbnail client
+# _validate_video_thumbnails unit tests
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class FakeThumbnailClient:
-    """Fake that records calls and returns pre-configured thumbnails."""
-
-    thumbnails: list[str] = field(default_factory=list)
-    calls: list[str] = field(default_factory=list)
-    should_raise: Exception | None = None
-
-    async def fetch_video_thumbnails(self, canonical_url: str) -> list[str]:
-        self.calls.append(canonical_url)
-        if self.should_raise is not None:
-            raise self.should_raise
-        return self.thumbnails
-
-
-# ---------------------------------------------------------------------------
-# _apply_video_thumbnails unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestApplyVideoThumbnails:
-    def test_overwrites_video_thumbnail(
+class TestValidateVideoThumbnails:
+    @respx.mock
+    async def test_clears_404_thumbnail(
         self, make_post_snapshot: Callable[..., XPostSnapshot]
     ) -> None:
-        video = XMedia(type="video", url="vid.mp4", thumbnail_url="https://old-thumb.jpg")
+        url = "https://pbs.twimg.com/ext_tw_video_thumb/123/456.jpg"
+        respx.head(url).mock(return_value=httpx.Response(404))
+
+        video = XMedia(type="video", url="vid.mp4", thumbnail_url=url)
         snapshot = make_post_snapshot(media=[video])
 
-        _apply_video_thumbnails(snapshot, ["https://new-thumb.jpg"])
+        await _validate_video_thumbnails(snapshot)
 
-        assert snapshot.media[0].thumbnail_url == "https://new-thumb.jpg"
+        assert snapshot.media[0].thumbnail_url is None
 
-    def test_skips_image_media(self, make_post_snapshot: Callable[..., XPostSnapshot]) -> None:
-        image = XMedia(type="image", url="img.jpg")
-        video = XMedia(type="video", url="vid.mp4", thumbnail_url="https://old.jpg")
-        snapshot = make_post_snapshot(media=[image, video])
-
-        _apply_video_thumbnails(snapshot, ["https://new.jpg"])
-
-        assert snapshot.media[0].thumbnail_url is None  # image unchanged
-        assert snapshot.media[1].thumbnail_url == "https://new.jpg"
-
-    def test_handles_gif_type(self, make_post_snapshot: Callable[..., XPostSnapshot]) -> None:
-        gif = XMedia(type="gif", url="anim.mp4", thumbnail_url="https://old-gif.jpg")
-        snapshot = make_post_snapshot(media=[gif])
-
-        _apply_video_thumbnails(snapshot, ["https://new-gif.jpg"])
-
-        assert snapshot.media[0].thumbnail_url == "https://new-gif.jpg"
-
-    def test_empty_thumbnails_no_change(
+    @respx.mock
+    async def test_keeps_200_thumbnail(
         self, make_post_snapshot: Callable[..., XPostSnapshot]
     ) -> None:
-        video = XMedia(type="video", url="vid.mp4", thumbnail_url="https://original.jpg")
+        url = "https://pbs.twimg.com/amplify_video_thumb/123/img/good.jpg"
+        respx.head(url).mock(return_value=httpx.Response(200))
+
+        video = XMedia(type="video", url="vid.mp4", thumbnail_url=url)
         snapshot = make_post_snapshot(media=[video])
 
-        _apply_video_thumbnails(snapshot, [])
+        await _validate_video_thumbnails(snapshot)
 
-        assert snapshot.media[0].thumbnail_url == "https://original.jpg"
+        assert snapshot.media[0].thumbnail_url == url
 
-    def test_fewer_thumbnails_than_videos(
+    @respx.mock
+    async def test_clears_on_network_error(
         self, make_post_snapshot: Callable[..., XPostSnapshot]
     ) -> None:
-        v1 = XMedia(type="video", url="v1.mp4", thumbnail_url="https://old1.jpg")
-        v2 = XMedia(type="video", url="v2.mp4", thumbnail_url="https://old2.jpg")
+        url = "https://pbs.twimg.com/ext_tw_video_thumb/123/456.jpg"
+        respx.head(url).mock(side_effect=httpx.ConnectError("connection refused"))
+
+        video = XMedia(type="video", url="vid.mp4", thumbnail_url=url)
+        snapshot = make_post_snapshot(media=[video])
+
+        await _validate_video_thumbnails(snapshot)
+
+        assert snapshot.media[0].thumbnail_url is None
+
+    @respx.mock
+    async def test_skips_image_media(
+        self, make_post_snapshot: Callable[..., XPostSnapshot]
+    ) -> None:
+        """Image media should not be HEAD-checked."""
+        image = XMedia(type="image", url="https://pbs.twimg.com/media/img.jpg")
+        snapshot = make_post_snapshot(media=[image])
+
+        await _validate_video_thumbnails(snapshot)
+
+        # No HEAD requests made, image untouched
+        assert snapshot.media[0].url == "https://pbs.twimg.com/media/img.jpg"
+
+    @respx.mock
+    async def test_skips_video_without_thumbnail(
+        self, make_post_snapshot: Callable[..., XPostSnapshot]
+    ) -> None:
+        video = XMedia(type="video", url="vid.mp4", thumbnail_url=None)
+        snapshot = make_post_snapshot(media=[video])
+
+        await _validate_video_thumbnails(snapshot)
+
+        assert snapshot.media[0].thumbnail_url is None
+
+    @respx.mock
+    async def test_validates_multiple_videos(
+        self, make_post_snapshot: Callable[..., XPostSnapshot]
+    ) -> None:
+        good_url = "https://pbs.twimg.com/thumb/good.jpg"
+        bad_url = "https://pbs.twimg.com/thumb/bad.jpg"
+        respx.head(good_url).mock(return_value=httpx.Response(200))
+        respx.head(bad_url).mock(return_value=httpx.Response(404))
+
+        v1 = XMedia(type="video", url="v1.mp4", thumbnail_url=good_url)
+        v2 = XMedia(type="video", url="v2.mp4", thumbnail_url=bad_url)
         snapshot = make_post_snapshot(media=[v1, v2])
 
-        _apply_video_thumbnails(snapshot, ["https://new1.jpg"])
+        await _validate_video_thumbnails(snapshot)
 
-        assert snapshot.media[0].thumbnail_url == "https://new1.jpg"
-        assert snapshot.media[1].thumbnail_url == "https://old2.jpg"
+        assert snapshot.media[0].thumbnail_url == good_url
+        assert snapshot.media[1].thumbnail_url is None
 
-    def test_more_thumbnails_than_videos(
+    @respx.mock
+    async def test_validates_gif_thumbnails(
         self, make_post_snapshot: Callable[..., XPostSnapshot]
     ) -> None:
-        video = XMedia(type="video", url="vid.mp4", thumbnail_url="https://old.jpg")
-        snapshot = make_post_snapshot(media=[video])
+        url = "https://pbs.twimg.com/thumb/gif.jpg"
+        respx.head(url).mock(return_value=httpx.Response(404))
 
-        _apply_video_thumbnails(snapshot, ["https://new1.jpg", "https://extra.jpg"])
+        gif = XMedia(type="gif", url="anim.mp4", thumbnail_url=url)
+        snapshot = make_post_snapshot(media=[gif])
 
-        assert snapshot.media[0].thumbnail_url == "https://new1.jpg"
+        await _validate_video_thumbnails(snapshot)
 
-    def test_no_media(self, make_post_snapshot: Callable[..., XPostSnapshot]) -> None:
+        assert snapshot.media[0].thumbnail_url is None
+
+    async def test_no_media_is_noop(
+        self, make_post_snapshot: Callable[..., XPostSnapshot]
+    ) -> None:
         snapshot = make_post_snapshot(media=[])
-        _apply_video_thumbnails(snapshot, ["https://orphan.jpg"])
+        await _validate_video_thumbnails(snapshot)
         assert snapshot.media == []
 
 
 # ---------------------------------------------------------------------------
-# XUnfurlService parallel flow tests
+# XUnfurlService flow tests
 # ---------------------------------------------------------------------------
 
 
-class TestServiceParallelThumbnails:
-    async def test_thumbnail_client_called_with_canonical_url(
+class TestServiceUnfurlFlow:
+    async def test_basic_unfurl(
         self,
         fake_x_repo: FakeXRepository,
         fake_slack: FakeSlackUnfurlRepository,
         make_post_snapshot: Callable[..., XPostSnapshot],
         make_job_dto: Callable,
     ) -> None:
-        video = XMedia(type="video", url="vid.mp4", thumbnail_url="https://xai-thumb.jpg")
-        snapshot = make_post_snapshot(media=[video])
+        snapshot = make_post_snapshot(media=[])
         fake_x_repo.default_snapshot = snapshot
 
-        thumb_client = FakeThumbnailClient(thumbnails=["https://fxtw-thumb.jpg"])
         service = XUnfurlService(
             x_repo=fake_x_repo,
             slack_repo=fake_slack,
             blocks_builder=XUnfurlBlocksBuilder(),
-            thumbnail_client=thumb_client,
-        )
-
-        job = make_job_dto(canonical_url="https://x.com/user/status/42")
-        await service.process_unfurl_job(job)
-
-        assert thumb_client.calls == ["https://x.com/user/status/42"]
-        # Thumbnail should be overwritten
-        assert snapshot.media[0].thumbnail_url == "https://fxtw-thumb.jpg"
-
-    async def test_thumbnail_client_failure_falls_back_to_xai(
-        self,
-        fake_x_repo: FakeXRepository,
-        fake_slack: FakeSlackUnfurlRepository,
-        make_post_snapshot: Callable[..., XPostSnapshot],
-        make_job_dto: Callable,
-    ) -> None:
-        video = XMedia(type="video", url="vid.mp4", thumbnail_url="https://xai-thumb.jpg")
-        snapshot = make_post_snapshot(media=[video])
-        fake_x_repo.default_snapshot = snapshot
-
-        thumb_client = FakeThumbnailClient(thumbnails=[])  # FxTwitter returned nothing
-        service = XUnfurlService(
-            x_repo=fake_x_repo,
-            slack_repo=fake_slack,
-            blocks_builder=XUnfurlBlocksBuilder(),
-            thumbnail_client=thumb_client,
         )
 
         job = make_job_dto()
         await service.process_unfurl_job(job)
 
-        # Original xAI thumbnail preserved
-        assert snapshot.media[0].thumbnail_url == "https://xai-thumb.jpg"
+        assert len(fake_slack.unfurl_calls) == 1
+        assert len(fake_slack.post_message_calls) == 0
 
-    async def test_no_thumbnail_client_works_normally(
+    async def test_unfurl_failure_falls_back_to_post_message(
         self,
         fake_x_repo: FakeXRepository,
         fake_slack: FakeSlackUnfurlRepository,
         make_post_snapshot: Callable[..., XPostSnapshot],
         make_job_dto: Callable,
     ) -> None:
-        snapshot = make_post_snapshot()
-        fake_x_repo.default_snapshot = snapshot
+        fake_x_repo.default_snapshot = make_post_snapshot(media=[])
+        fake_slack.unfurl_should_raise = ValueError("cannot_unfurl_url")
 
         service = XUnfurlService(
             x_repo=fake_x_repo,
             slack_repo=fake_slack,
             blocks_builder=XUnfurlBlocksBuilder(),
-            # no thumbnail_client
         )
 
-        job = make_job_dto()
-        await service.process_unfurl_job(job)
+        await service.process_unfurl_job(make_job_dto())
 
-        # Should complete without error
+        assert len(fake_slack.unfurl_calls) == 1
         assert len(fake_slack.post_message_calls) == 1
+        posted = fake_slack.post_message_calls[0]
+        assert posted.text.startswith("X post by @")
+        assert posted.color == XUnfurlBlocksBuilder.ACCENT_COLOR
 
-    async def test_summarize_action_still_uses_thumbnails(
+    async def test_ask_grok_posts_threaded_reply(
         self,
         fake_x_repo: FakeXRepository,
         fake_slack: FakeSlackUnfurlRepository,
-        make_post_snapshot: Callable[..., XPostSnapshot],
         make_job_dto: Callable,
     ) -> None:
-        video = XMedia(type="video", url="vid.mp4", thumbnail_url="https://xai.jpg")
-        snapshot = make_post_snapshot(media=[video])
-        fake_x_repo.default_snapshot = snapshot
-
-        thumb_client = FakeThumbnailClient(thumbnails=["https://fxtw.jpg"])
         service = XUnfurlService(
             x_repo=fake_x_repo,
             slack_repo=fake_slack,
             blocks_builder=XUnfurlBlocksBuilder(),
-            thumbnail_client=thumb_client,
-        )
-
-        job = make_job_dto(action="summarize")
-        await service.process_unfurl_job(job)
-
-        assert snapshot.media[0].thumbnail_url == "https://fxtw.jpg"
-
-    async def test_ask_grok_action_does_not_use_thumbnails(
-        self,
-        fake_x_repo: FakeXRepository,
-        fake_slack: FakeSlackUnfurlRepository,
-        make_post_snapshot: Callable[..., XPostSnapshot],
-        make_job_dto: Callable,
-    ) -> None:
-        thumb_client = FakeThumbnailClient(thumbnails=["https://fxtw.jpg"])
-        service = XUnfurlService(
-            x_repo=fake_x_repo,
-            slack_repo=fake_slack,
-            blocks_builder=XUnfurlBlocksBuilder(),
-            thumbnail_client=thumb_client,
         )
 
         job = make_job_dto(action="ask_grok", user_prompt="What is this?", user_id="U001")
         await service.process_unfurl_job(job)
 
-        # Thumbnail client should NOT be called for ask_grok
-        assert thumb_client.calls == []
+        assert len(fake_slack.unfurl_calls) == 0
+        assert len(fake_slack.post_message_calls) == 1
+        posted = fake_slack.post_message_calls[0]
+        assert posted.thread_ts == job.message_ts

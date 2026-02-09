@@ -111,6 +111,9 @@ class FakeSlackUnfurlRepository:
     post_message_calls: list[PostMessageCall] = field(default_factory=list)
     open_modal_calls: list[OpenModalCall] = field(default_factory=list)
     should_raise: Exception | None = None
+    unfurl_should_raise: Exception | None = None
+    post_message_should_raise: Exception | None = None
+    open_modal_should_raise: Exception | None = None
     post_message_ts: str = "1700000001.000200"
 
     async def unfurl_links(
@@ -120,6 +123,8 @@ class FakeSlackUnfurlRepository:
         unfurls: dict[str, dict[str, Any]],
     ) -> None:
         self.unfurl_calls.append(UnfurlCall(channel_id, message_ts, unfurls))
+        if self.unfurl_should_raise is not None:
+            raise self.unfurl_should_raise
         if self.should_raise is not None:
             raise self.should_raise
 
@@ -132,12 +137,16 @@ class FakeSlackUnfurlRepository:
         color: str = "",
     ) -> str:
         self.post_message_calls.append(PostMessageCall(channel_id, blocks, text, thread_ts, color))
+        if self.post_message_should_raise is not None:
+            raise self.post_message_should_raise
         if self.should_raise is not None:
             raise self.should_raise
         return self.post_message_ts
 
     async def open_modal(self, trigger_id: str, view: dict[str, Any]) -> None:
         self.open_modal_calls.append(OpenModalCall(trigger_id, view))
+        if self.open_modal_should_raise is not None:
+            raise self.open_modal_should_raise
         if self.should_raise is not None:
             raise self.should_raise
 

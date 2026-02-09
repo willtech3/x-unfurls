@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import httpx
 
 from shared.domain.dtos import XUnfurlJobDto
 from shared.domain.repositories.slack_repository import SlackUnfurlRepository
 from xunfurls.application.presenters.x_unfurl_blocks import XUnfurlBlocksBuilder
-from xunfurls.domain.entities import XPostSnapshot, XStatusRef
+from xunfurls.domain.entities import XMedia, XPostSnapshot, XStatusRef
 from xunfurls.domain.repositories.x_repository import FetchMode, XRepository
 
-if TYPE_CHECKING:
-    from xunfurls.infrastructure.fxtwitter_client import FxTwitterClient
-
 logger = logging.getLogger(__name__)
+
+_THUMB_VALIDATE_TIMEOUT = 3.0
 
 
 class XUnfurlService:
@@ -26,12 +27,10 @@ class XUnfurlService:
         x_repo: XRepository,
         slack_repo: SlackUnfurlRepository,
         blocks_builder: XUnfurlBlocksBuilder,
-        thumbnail_client: FxTwitterClient | None = None,
     ) -> None:
         self._x_repo = x_repo
         self._slack_repo = slack_repo
         self._blocks_builder = blocks_builder
-        self._thumbnail_client = thumbnail_client
 
     async def process_unfurl_job(self, job: XUnfurlJobDto) -> None:
         """Process an unfurl job.
@@ -56,29 +55,43 @@ class XUnfurlService:
         if job.action == "summarize":
             mode = FetchMode.SUMMARY_ONLY
 
-        if self._thumbnail_client is not None:
-            snapshot, thumbnails = await asyncio.gather(
-                self._x_repo.fetch_post_snapshot(status_ref, mode),
-                self._thumbnail_client.fetch_video_thumbnails(job.canonical_url),
-            )
-            _apply_video_thumbnails(snapshot, thumbnails)
-        else:
-            snapshot = await self._x_repo.fetch_post_snapshot(status_ref, mode)
+        logger.info("Processing standard unfurl job %s (action=%s)", job.job_id, job.action)
+
+        snapshot = await self._x_repo.fetch_post_snapshot(status_ref, mode)
+        await _validate_video_thumbnails(snapshot)
 
         blocks = self._blocks_builder.build_unfurl_blocks(snapshot, job.canonical_url)
 
-        await self._slack_repo.post_message(
-            channel_id=job.channel_id,
-            blocks=blocks,
-            text=f"X post by @{snapshot.author_handle.lstrip('@')}",
-            color=self._blocks_builder.ACCENT_COLOR,
-        )
+        unfurl_text = f"X post by @{snapshot.author_handle.lstrip('@')}"
+        unfurls = {job.original_url: {"blocks": blocks, "text": unfurl_text}}
+
+        try:
+            await self._slack_repo.unfurl_links(
+                channel_id=job.channel_id,
+                message_ts=job.message_ts,
+                unfurls=unfurls,
+            )
+            logger.info("Inline unfurl posted for job %s", job.job_id)
+        except Exception:
+            logger.warning(
+                "Inline unfurl failed for job %s; falling back to post_message",
+                job.job_id,
+                exc_info=True,
+            )
+            await self._slack_repo.post_message(
+                channel_id=job.channel_id,
+                blocks=blocks,
+                text=unfurl_text,
+                color=self._blocks_builder.ACCENT_COLOR,
+            )
+            logger.info("Fallback unfurl message posted for job %s", job.job_id)
 
     async def _process_ask_grok(self, job: XUnfurlJobDto, status_ref: XStatusRef) -> None:
         """Process an 'ask_grok' follow-up question.
 
         Posts the answer as a threaded reply on the unfurl message.
         """
+        logger.info("Processing ask_grok job %s for user %s", job.job_id, job.user_id or "unknown")
         answer = await self._x_repo.ask_about_post(status_ref, job.user_prompt)
         blocks = self._build_ask_grok_reply_blocks(job.user_id, job.user_prompt, answer)
 
@@ -88,6 +101,7 @@ class XUnfurlService:
             text=f"Grok's answer: {answer[:100]}",
             thread_ts=job.message_ts,
         )
+        logger.info("Ask-grok reply posted for job %s", job.job_id)
 
     @staticmethod
     def _build_ask_grok_reply_blocks(
@@ -123,21 +137,32 @@ class XUnfurlService:
         return blocks
 
 
-def _apply_video_thumbnails(snapshot: XPostSnapshot, thumbnails: list[str]) -> None:
-    """Overwrite video media thumbnail URLs with FxTwitter results.
+async def _validate_video_thumbnails(snapshot: XPostSnapshot) -> None:
+    """HEAD-check video thumbnail URLs; null out any that don't return 200.
 
-    Matches thumbnails to video media items by position. Only overwrites
-    if FxTwitter returned a non-empty list.
+    Prevents Slack ``invalid_attachments`` errors caused by dead thumbnail
+    URLs from xAI.  Runs all checks concurrently; adds ~100ms overhead.
     """
-    if not thumbnails:
+    video_media = [m for m in snapshot.media if m.type in ("video", "gif") and m.thumbnail_url]
+    if not video_media:
         return
 
-    video_indices = [i for i, m in enumerate(snapshot.media) if m.type in ("video", "gif")]
-    for idx, thumb_url in zip(video_indices, thumbnails, strict=False):
-        logger.debug(
-            "Replacing video thumbnail [%d]: %s -> %s",
-            idx,
-            snapshot.media[idx].thumbnail_url,
-            thumb_url,
-        )
-        snapshot.media[idx].thumbnail_url = thumb_url
+    async with httpx.AsyncClient(timeout=_THUMB_VALIDATE_TIMEOUT) as client:
+        await asyncio.gather(*[_check_thumbnail(client, m) for m in video_media])
+
+
+async def _check_thumbnail(client: httpx.AsyncClient, media: XMedia) -> None:
+    """HEAD-check a single thumbnail URL; null it out on failure."""
+    assert media.thumbnail_url is not None  # caller guarantees this
+    try:
+        resp = await client.head(media.thumbnail_url, follow_redirects=True)
+        if resp.status_code != 200:
+            logger.info(
+                "Thumbnail HEAD returned %d, clearing: %s",
+                resp.status_code,
+                media.thumbnail_url,
+            )
+            media.thumbnail_url = None
+    except Exception:
+        logger.info("Thumbnail HEAD failed, clearing: %s", media.thumbnail_url, exc_info=True)
+        media.thumbnail_url = None

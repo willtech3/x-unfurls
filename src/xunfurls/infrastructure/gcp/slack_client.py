@@ -61,6 +61,7 @@ class SlackHttpClient(SlackUnfurlRepository):
         data = response.json()
         if not data.get("ok"):
             error = data.get("error", "unknown_error")
+            resp_meta = data.get("response_metadata", {})
             log_event(
                 logger,
                 logging.ERROR,
@@ -69,7 +70,11 @@ class SlackHttpClient(SlackUnfurlRepository):
                 error=error,
                 channel=channel_id,
                 ts=message_ts,
+                response_metadata=json.dumps(resp_meta) if resp_meta else None,
+                unfurls_json=json.dumps(unfurls)[:2000],
             )
+            if error in _PERMANENT_SLACK_ERRORS:
+                raise ValueError(f"Slack API error (permanent): {error}")
             raise RuntimeError(f"Slack API error: {error}")
 
         log_event(

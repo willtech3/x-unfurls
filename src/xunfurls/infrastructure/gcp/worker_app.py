@@ -91,12 +91,25 @@ async def process_pubsub_message(request: Request) -> dict[str, str]:
     envelope = await request.json()
 
     if not envelope or "message" not in envelope:
+        log_event(
+            logger,
+            logging.WARNING,
+            "Invalid Pub/Sub envelope: missing message",
+            event="invalid_pubsub_envelope",
+        )
         raise HTTPException(status_code=400, detail="Invalid Pub/Sub message format")
 
     message = envelope["message"]
     message_id = message.get("messageId", "unknown")
 
     if "data" not in message:
+        log_event(
+            logger,
+            logging.WARNING,
+            "Invalid Pub/Sub message: missing data field",
+            event="invalid_pubsub_message",
+            message_id=message_id,
+        )
         raise HTTPException(status_code=400, detail="Missing message data")
 
     # ------------------------------------------------------------------
@@ -130,10 +143,10 @@ async def process_pubsub_message(request: Request) -> dict[str, str]:
     # CQ-5: Never leak internal error details in the response
     # ------------------------------------------------------------------
     tracer = get_tracer()
+    start_time = time.monotonic()
     try:
         unfurl_service = request.app.state.unfurl_service
 
-        start_time = time.monotonic()
         with tracer.start_as_current_span(
             "process_unfurl_job",
             attributes={

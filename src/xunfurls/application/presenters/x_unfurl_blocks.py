@@ -87,12 +87,11 @@ class XUnfurlBlocksBuilder:
                     }
                 )
             elif media.type == "video":
-                thumb = media.thumbnail_url
-                if self._is_valid_image_url(thumb):
+                if self._is_valid_image_url(media.thumbnail_url):
                     blocks.append(
                         {
                             "type": "image",
-                            "image_url": thumb,
+                            "image_url": media.thumbnail_url,
                             "alt_text": media.alt_text or "Video thumbnail",
                         }
                     )
@@ -238,24 +237,16 @@ class XUnfurlBlocksBuilder:
         """Check if a URL is non-empty and uses http(s)."""
         return url is not None and url.startswith(("http://", "https://"))
 
-    _VIDEO_STREAM_PATTERNS = ("/vid/avc1/", "/vid/hevc/", "/vid/vp9/")
-
     def _is_valid_image_url(self, url: str | None) -> bool:
         """Check if a URL is valid and points to an image (not a video).
 
-        Rejects URLs ending with video file extensions AND video-stream
-        adaptation URLs (e.g. video.twimg.com/.../vid/avc1/...) that
-        masquerade as images with a .jpg extension.
+        Rejects URLs ending with video file extensions.
         """
         if not self._is_valid_url(url):
             return False
         assert url is not None  # narrowed by _is_valid_url
         path = url.split("?")[0].lower()
-        if path.endswith(self._VIDEO_EXTENSIONS):
-            return False
-        if any(p in path for p in self._VIDEO_STREAM_PATTERNS):
-            return False
-        return True
+        return not path.endswith(self._VIDEO_EXTENSIONS)
 
     def _clean_handle(self, handle: str) -> str:
         """Strip leading @ from handle if xAI included it."""

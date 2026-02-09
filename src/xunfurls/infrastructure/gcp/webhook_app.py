@@ -73,8 +73,6 @@ X_DOMAINS = {"x.com", "twitter.com", "www.x.com", "www.twitter.com"}
 STATUS_PATTERN = re.compile(r"/(?:status|statuses)/(\d+)")
 # Slack wraps URLs as <URL> or <URL|display> in message text
 SLACK_URL_PATTERN = re.compile(r"<(https?://[^|>]+)(?:\|[^>]*)?>")
-# X/Twitter URL pattern for matching in message text
-X_URL_PATTERN = re.compile(r"https?://(?:www\.)?(?:x\.com|twitter\.com)/\w+/status(?:es)?/\d+")
 
 
 def validate_slack_signature(
