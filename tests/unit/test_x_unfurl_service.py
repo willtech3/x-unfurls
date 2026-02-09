@@ -120,9 +120,7 @@ class TestValidateVideoThumbnails:
 
         assert snapshot.media[0].thumbnail_url is None
 
-    async def test_no_media_is_noop(
-        self, make_post_snapshot: Callable[..., XPostSnapshot]
-    ) -> None:
+    async def test_no_media_is_noop(self, make_post_snapshot: Callable[..., XPostSnapshot]) -> None:
         snapshot = make_post_snapshot(media=[])
         await _validate_video_thumbnails(snapshot)
         assert snapshot.media == []
