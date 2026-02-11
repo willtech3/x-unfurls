@@ -143,12 +143,24 @@ async def _validate_video_thumbnails(snapshot: XPostSnapshot) -> None:
     Prevents Slack ``invalid_attachments`` errors caused by dead thumbnail
     URLs from xAI.  Runs all checks concurrently; adds ~100ms overhead.
     """
-    video_media = [m for m in snapshot.media if m.type in ("video", "gif") and m.thumbnail_url]
-    if not video_media:
+    all_video = [m for m in snapshot.media if m.type in ("video", "gif")]
+    if not all_video:
+        return
+
+    missing = [m for m in all_video if not m.thumbnail_url]
+    if missing:
+        logger.info(
+            "Video/gif media missing thumbnail_url from xAI: %d of %d",
+            len(missing),
+            len(all_video),
+        )
+
+    to_check = [m for m in all_video if m.thumbnail_url]
+    if not to_check:
         return
 
     async with httpx.AsyncClient(timeout=_THUMB_VALIDATE_TIMEOUT) as client:
-        await asyncio.gather(*[_check_thumbnail(client, m) for m in video_media])
+        await asyncio.gather(*[_check_thumbnail(client, m) for m in to_check])
 
 
 async def _check_thumbnail(client: httpx.AsyncClient, media: XMedia) -> None:
@@ -163,6 +175,8 @@ async def _check_thumbnail(client: httpx.AsyncClient, media: XMedia) -> None:
                 media.thumbnail_url,
             )
             media.thumbnail_url = None
+        else:
+            logger.info("Thumbnail HEAD OK: %s", media.thumbnail_url)
     except Exception:
         logger.info("Thumbnail HEAD failed, clearing: %s", media.thumbnail_url, exc_info=True)
         media.thumbnail_url = None
