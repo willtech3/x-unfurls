@@ -1,6 +1,12 @@
 """Shared test configuration and fixtures used across all test types."""
 
+import os
+
 import pytest
+
+# Set TESTING=1 before any application modules are imported, so that
+# webhook_app.py's startup validation for SLACK_SIGNING_SECRET is skipped.
+os.environ.setdefault("TESTING", "1")
 
 
 @pytest.fixture

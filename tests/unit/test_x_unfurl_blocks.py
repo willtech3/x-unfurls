@@ -139,12 +139,22 @@ def test_accent_color_constant(builder: XUnfurlBlocksBuilder) -> None:
 
 
 def test_sanitize_text(builder: XUnfurlBlocksBuilder) -> None:
-    """Test text sanitization."""
+    """Test text sanitization of broadcast mentions."""
     text = "@channel @here @everyone normal text"
     sanitized = builder._sanitize_text(text)
     assert "@\u200bchannel" in sanitized
     assert "@\u200bhere" in sanitized
     assert "@\u200beveryone" in sanitized
+
+
+def test_sanitize_text_user_mentions(builder: XUnfurlBlocksBuilder) -> None:
+    """Test sanitization of user and group mentions."""
+    text = "Hey <@U12345678> check this <!subteam^S123> and <#C456>"
+    sanitized = builder._sanitize_text(text)
+    assert "<@U12345678>" not in sanitized
+    assert "<\u200b@U12345678>" in sanitized
+    assert "<\u200b!subteam^S123>" in sanitized
+    assert "<\u200b#C456>" in sanitized
 
 
 def test_truncate_text(builder: XUnfurlBlocksBuilder) -> None:
@@ -435,6 +445,17 @@ def test_ask_grok_button_value_contains_canonical_url(builder: XUnfurlBlocksBuil
     assert ask_btn["value"] == url
 
 
+def test_ask_grok_button_styled_as_primary(builder: XUnfurlBlocksBuilder) -> None:
+    """The Ask Grok button should have primary styling to stand out."""
+    snap = _make_snapshot(summary=None)
+    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
+    actions_blocks = [b for b in blocks if b["type"] == "actions"]
+    ask_btn = [
+        btn for btn in actions_blocks[0]["elements"] if btn["action_id"] == "x_unfurl_ask_grok"
+    ][0]
+    assert ask_btn.get("style") == "primary"
+
+
 # ---------------------------------------------------------------------------
 # Grok summary rendering
 # ---------------------------------------------------------------------------
@@ -484,44 +505,19 @@ def test_replies_rendered_as_context_blocks(builder: XUnfurlBlocksBuilder) -> No
 # ---------------------------------------------------------------------------
 
 
-def test_recent_post_shows_relative_time(builder: XUnfurlBlocksBuilder) -> None:
-    """Posts from minutes ago should show compact relative time."""
-    from datetime import timedelta
-
-    recent = datetime.now(UTC) - timedelta(minutes=5)
-    snap = _make_snapshot(created_at=recent)
+def test_timestamp_uses_slack_native_date_format(builder: XUnfurlBlocksBuilder) -> None:
+    """Timestamps should use Slack's <!date^...> native formatting."""
+    dt = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
+    snap = _make_snapshot(created_at=dt)
     blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
     author_block = blocks[1]
     author_text = [
         e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
     ][0]
-    assert "5m ago" in author_text
-
-
-def test_old_post_shows_absolute_date(builder: XUnfurlBlocksBuilder) -> None:
-    """Posts older than 7 days should show absolute date like 'Jan 15, 2024'."""
-    old = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
-    snap = _make_snapshot(created_at=old)
-    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    author_block = blocks[1]
-    author_text = [
-        e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
-    ][0]
+    unix_ts = int(dt.timestamp())
+    assert f"<!date^{unix_ts}^" in author_text
+    # Fallback text should be present after the pipe
     assert "Jan 15, 2024" in author_text
-
-
-def test_hours_ago_shown_correctly(builder: XUnfurlBlocksBuilder) -> None:
-    """Posts from hours ago should show compact format like '3h ago'."""
-    from datetime import timedelta
-
-    hours_ago = datetime.now(UTC) - timedelta(hours=3)
-    snap = _make_snapshot(created_at=hours_ago)
-    blocks = builder.build_unfurl_blocks(snap, "https://x.com/t/status/1")
-    author_block = blocks[1]
-    author_text = [
-        e.get("text", "") for e in author_block["elements"] if e.get("type") == "mrkdwn"
-    ][0]
-    assert "3h ago" in author_text
 
 
 # ---------------------------------------------------------------------------

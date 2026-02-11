@@ -6,7 +6,6 @@ from shared.infrastructure.observability import (
     get_meter,
     get_tracer,
     record_job_processed,
-    record_request,
     setup_observability,
 )
 
@@ -47,23 +46,6 @@ class TestObservabilitySetup:
 
 class TestMetricsRecording:
     """ARCH-6: Custom metrics should be recordable without error."""
-
-    def test_record_request_emits_counter_and_histogram(self, monkeypatch) -> None:
-        from shared.infrastructure import observability
-
-        counter = _CounterSpy()
-        histogram = _HistogramSpy()
-        monkeypatch.setattr(observability, "_request_counter", counter)
-        monkeypatch.setattr(observability, "_request_duration", histogram)
-
-        record_request(method="POST", path="/pubsub", status_code=200, duration_ms=42.5)
-
-        assert counter.calls == [
-            (1, {"http.method": "POST", "http.route": "/pubsub", "http.status_code": 200})
-        ]
-        assert histogram.calls == [
-            (42.5, {"http.method": "POST", "http.route": "/pubsub", "http.status_code": 200})
-        ]
 
     def test_record_job_processed_emits_counter_and_histogram(self, monkeypatch) -> None:
         from shared.infrastructure import observability

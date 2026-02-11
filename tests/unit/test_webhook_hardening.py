@@ -12,6 +12,7 @@ from shared.domain.dtos import XUnfurlJobDto
 from xunfurls.infrastructure.gcp.webhook_app import (
     canonicalize_url,
     extract_status_id,
+    extract_urls_from_text,
     validate_slack_signature,
 )
 
@@ -29,8 +30,8 @@ def _make_valid_signature(body: bytes, timestamp: str) -> str:
     return f"v0={sig}"
 
 
-class TestBug2MissingHeaders:
-    """BUG-2: validate_slack_signature must return False on bad input."""
+class TestSlackSignatureRejectsBadInput:
+    """Signature validation must return False for missing/malformed headers."""
 
     def test_empty_timestamp_returns_false(self) -> None:
         result = validate_slack_signature(
@@ -82,8 +83,8 @@ class TestBug2MissingHeaders:
         assert result is True
 
 
-class TestBug5CanonicalizeUrl:
-    """BUG-5: canonicalize_url fallback for root-only URLs."""
+class TestCanonicalizeUrlEdgeCases:
+    """canonicalize_url handles root-only and missing-username URLs."""
 
     def test_canonicalize_url_empty_path(self) -> None:
         result = canonicalize_url("https://x.com/", "123456789")
@@ -102,8 +103,8 @@ class TestBug5CanonicalizeUrl:
         assert result == "https://x.com/i/status/123456789"
 
 
-class TestCQ1ActionEnum:
-    """CQ-1: XUnfurlJobDto.action should use Literal type."""
+class TestJobDtoActionType:
+    """XUnfurlJobDto.action uses Literal type for valid actions."""
 
     def test_job_dto_with_valid_action(self) -> None:
         dto = XUnfurlJobDto(
@@ -141,8 +142,8 @@ class TestCQ1ActionEnum:
             assert dto.action == action
 
 
-class TestCQ2RegexDomainSafety:
-    """CQ-2: is_x_link guards against non-X domains."""
+class TestUrlDomainValidation:
+    """is_x_link guards against non-X domains."""
 
     def test_extract_status_id_matches_any_url_with_status_path(self) -> None:
         result = extract_status_id("https://example.com/status/123")
@@ -159,8 +160,8 @@ class TestCQ2RegexDomainSafety:
         assert extract_status_id("https://x.com/settings") is None
 
 
-class TestCQ3DependencyInjection:
-    """CQ-3: webhook app must support injected job queue."""
+class TestWebhookJobQueueInjection:
+    """Webhook app supports injected job queue for testing."""
 
     def test_webhook_uses_dependency_injection(self) -> None:
         from xunfurls.infrastructure.gcp.webhook_app import (
@@ -191,15 +192,15 @@ class TestCQ3DependencyInjection:
         assert get_job_queue() is q
 
 
-class TestCQ4InteractiveEndpoint:
-    """CQ-4: /slack/interactive must validate Slack signature."""
+class TestInteractiveEndpointSignatureValidation:
+    """/slack/interactive validates Slack signature."""
 
     def _get_client(self) -> TestClient:
         from xunfurls.infrastructure.gcp.webhook_app import app
 
         return TestClient(app)
 
-    @patch.dict("os.environ", {"SLACK_SIGNING_SECRET": SIGNING_SECRET})
+    @patch("xunfurls.infrastructure.gcp.webhook_app._SIGNING_SECRET", SIGNING_SECRET)
     def test_interactive_endpoint_validates_signature(self) -> None:
         client = self._get_client()
         response = client.post(
@@ -212,7 +213,7 @@ class TestCQ4InteractiveEndpoint:
         )
         assert response.status_code == 401
 
-    @patch.dict("os.environ", {"SLACK_SIGNING_SECRET": SIGNING_SECRET})
+    @patch("xunfurls.infrastructure.gcp.webhook_app._SIGNING_SECRET", SIGNING_SECRET)
     def test_interactive_missing_headers_returns_401(self) -> None:
         client = self._get_client()
         response = client.post(
@@ -221,7 +222,7 @@ class TestCQ4InteractiveEndpoint:
         )
         assert response.status_code == 401
 
-    @patch.dict("os.environ", {"SLACK_SIGNING_SECRET": SIGNING_SECRET})
+    @patch("xunfurls.infrastructure.gcp.webhook_app._SIGNING_SECRET", SIGNING_SECRET)
     def test_interactive_endpoint_accepts_valid_request(self) -> None:
         client = self._get_client()
         body = b"payload=test"
@@ -237,3 +238,35 @@ class TestCQ4InteractiveEndpoint:
         )
         assert response.status_code == 200
         assert response.json() == {"ok": True}
+
+
+class TestExtractUrlsFromText:
+    """extract_urls_from_text extracts X/Twitter URLs from Slack message text."""
+
+    def test_extracts_x_urls_from_slack_format(self) -> None:
+        text = "Check this out <https://x.com/user/status/123>"
+        urls = extract_urls_from_text(text)
+        assert urls == ["https://x.com/user/status/123"]
+
+    def test_extracts_urls_with_display_text(self) -> None:
+        text = "Look at <https://x.com/user/status/456|x.com/user/status/456>"
+        urls = extract_urls_from_text(text)
+        assert urls == ["https://x.com/user/status/456"]
+
+    def test_ignores_non_x_urls(self) -> None:
+        text = "<https://example.com/status/123> and <https://x.com/user/status/789>"
+        urls = extract_urls_from_text(text)
+        assert urls == ["https://x.com/user/status/789"]
+
+    def test_ignores_non_status_urls(self) -> None:
+        text = "<https://x.com/user/profile>"
+        urls = extract_urls_from_text(text)
+        assert urls == []
+
+    def test_empty_text_returns_empty(self) -> None:
+        assert extract_urls_from_text("") == []
+
+    def test_multiple_x_urls(self) -> None:
+        text = "<https://x.com/a/status/1> and <https://twitter.com/b/status/2>"
+        urls = extract_urls_from_text(text)
+        assert len(urls) == 2

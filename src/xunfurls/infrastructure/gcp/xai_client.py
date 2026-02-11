@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from shared.infrastructure.logging import log_event
+from shared.infrastructure.observability import get_tracer
 from xunfurls.domain.entities import (
     XMedia,
     XMetrics,
@@ -269,6 +270,7 @@ CRITICAL SAFETY INSTRUCTIONS:
         Returns:
             API response data
         """
+        tracer = get_tracer()
         payload = {
             "model": "grok-4-1-fast",
             "input": [{"role": "user", "content": prompt}],
@@ -277,8 +279,12 @@ CRITICAL SAFETY INSTRUCTIONS:
             "store": False,
         }
 
-        response = await self._client.post("/responses", json=payload)
-        response.raise_for_status()
+        with tracer.start_as_current_span(
+            "xai_api_call",
+            attributes={"xai.model": "grok-4-1-fast", "xai.mode": mode.value},
+        ):
+            response = await self._client.post("/responses", json=payload)
+            response.raise_for_status()
 
         data: dict[str, Any] = response.json()
 
@@ -300,10 +306,6 @@ CRITICAL SAFETY INSTRUCTIONS:
     def _parse_response(self, response: dict[str, Any]) -> XPostSnapshot:
         """Parse xAI response into XPostSnapshot."""
         return parse_xai_response(response)
-
-    def _create_fallback_snapshot(self) -> XPostSnapshot:
-        """Create a minimal fallback snapshot when parsing fails."""
-        return create_fallback_snapshot()
 
     async def ask_about_post(self, status_ref: XStatusRef, question: str) -> str:
         """Ask a follow-up question about an X post.
@@ -339,22 +341,27 @@ CRITICAL SAFETY INSTRUCTIONS:
             "store": False,
         }
 
-        response = await self._client.post("/responses", json=payload)
-        response.raise_for_status()
-        data: dict[str, Any] = response.json()
+        tracer = get_tracer()
+        with tracer.start_as_current_span(
+            "xai_ask_about_post",
+            attributes={"xai.model": "grok-4-1-fast", "xai.status_id": status_ref.status_id},
+        ):
+            response = await self._client.post("/responses", json=payload)
+            response.raise_for_status()
+            data: dict[str, Any] = response.json()
 
-        if data.get("error"):
-            error_obj = data["error"]
-            error_msg = (
-                error_obj.get("message", "Unknown error")
-                if isinstance(error_obj, dict)
-                else str(error_obj)
-            )
-            raise RuntimeError(f"xAI API error: {error_msg}")
+            if data.get("error"):
+                error_obj = data["error"]
+                error_msg = (
+                    error_obj.get("message", "Unknown error")
+                    if isinstance(error_obj, dict)
+                    else str(error_obj)
+                )
+                raise RuntimeError(f"xAI API error: {error_msg}")
 
-        answer = _extract_text_from_responses_api(data)
-        if not answer:
-            raise ValueError("No text output in xAI response")
+            answer = _extract_text_from_responses_api(data)
+            if not answer:
+                raise ValueError("No text output in xAI response")
 
         log_event(
             logger,

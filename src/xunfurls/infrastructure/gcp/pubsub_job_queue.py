@@ -3,12 +3,15 @@
 import asyncio
 import dataclasses
 import json
+import logging
 import os
 
 from google.cloud import pubsub_v1  # type: ignore[attr-defined]
 
 from shared.domain.dtos import XUnfurlJobDto
 from shared.domain.repositories.job_queue_repository import JobQueueProducer
+
+logger = logging.getLogger(__name__)
 
 
 class PubSubJobQueue(JobQueueProducer):
@@ -38,4 +41,5 @@ class PubSubJobQueue(JobQueueProducer):
 
         loop = asyncio.get_running_loop()
         message_id = await loop.run_in_executor(None, publish_sync)
+        logger.info("Published job to Pub/Sub: job_id=%s, message_id=%s", job.job_id, message_id)
         return message_id

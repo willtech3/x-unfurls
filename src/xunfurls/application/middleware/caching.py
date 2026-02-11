@@ -5,11 +5,14 @@ Cache key is the status_id. SUMMARY_ONLY mode always bypasses cache
 to ensure fresh AI-generated summaries.
 """
 
+import logging
 import time
 from collections import OrderedDict
 
 from xunfurls.domain.entities import XPostSnapshot, XStatusRef
 from xunfurls.domain.repositories.x_repository import FetchMode, XRepository
+
+logger = logging.getLogger(__name__)
 
 
 class CachingXRepository:
@@ -34,7 +37,9 @@ class CachingXRepository:
         if mode != FetchMode.SUMMARY_ONLY:
             cached = self._get(key)
             if cached is not None:
+                logger.debug("Cache hit for status_id=%s", key)
                 return cached
+            logger.info("Cache miss for status_id=%s", key)
 
         snapshot = await self._inner.fetch_post_snapshot(status_ref, mode)
         self._put(key, snapshot)
@@ -46,6 +51,7 @@ class CachingXRepository:
         ts, snapshot = self._cache[key]
         if time.monotonic() - ts > self._ttl:
             del self._cache[key]
+            logger.debug("Cache entry expired for status_id=%s", key)
             return None
         # Move to end (most recently used)
         self._cache.move_to_end(key)
@@ -56,7 +62,10 @@ class CachingXRepository:
         return await self._inner.ask_about_post(status_ref, question)
 
     def _put(self, key: str, snapshot: XPostSnapshot) -> None:
+        evicted = len(self._cache) >= self._max_size
         self._cache[key] = (time.monotonic(), snapshot)
         self._cache.move_to_end(key)
         while len(self._cache) > self._max_size:
             self._cache.popitem(last=False)
+        if evicted:
+            logger.debug("Cache evicted oldest entry, size=%d", len(self._cache))

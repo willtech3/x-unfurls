@@ -1,9 +1,8 @@
-"""OpenTelemetry observability setup for metrics, traces, and health checks.
+"""OpenTelemetry observability setup for tracing and job metrics.
 
 Provides a single setup_observability() function that configures:
-- Distributed tracing (Cloud Trace in GCP, console/noop in dev)
-- Metrics (request counts, durations, error rates)
-- FastAPI auto-instrumentation
+- Distributed tracing (Cloud Trace in GCP, noop in dev)
+- Job processing metrics (counts, durations)
 
 Usage:
     from shared.infrastructure.observability import setup_observability
@@ -24,8 +23,6 @@ _tracer: trace.Tracer | None = None
 _meter: metrics.Meter | None = None
 
 # Metric instruments
-_request_counter: metrics.Counter | None = None
-_request_duration: metrics.Histogram | None = None
 _job_counter: metrics.Counter | None = None
 _job_duration: metrics.Histogram | None = None
 
@@ -42,7 +39,7 @@ def setup_observability(
                           If False, use noop exporters (for dev/test).
     """
     global _tracer, _meter
-    global _request_counter, _request_duration, _job_counter, _job_duration
+    global _job_counter, _job_duration
 
     resource = Resource.create({"service.name": service_name})
 
@@ -56,7 +53,7 @@ def setup_observability(
 
             tracer_provider.add_span_processor(BatchSpanProcessor(CloudTraceSpanExporter()))
         except Exception:
-            logger.warning("Could not initialize GCP trace exporter, using noop")
+            logger.warning("Could not initialize GCP trace exporter, using noop", exc_info=True)
 
     trace.set_tracer_provider(tracer_provider)
     _tracer = trace.get_tracer(service_name)
@@ -66,16 +63,7 @@ def setup_observability(
     metrics.set_meter_provider(meter_provider)
     _meter = metrics.get_meter(service_name)
 
-    # Create metric instruments
-    _request_counter = _meter.create_counter(
-        "http.server.request.count",
-        description="Total HTTP requests received",
-    )
-    _request_duration = _meter.create_histogram(
-        "http.server.request.duration",
-        description="HTTP request duration in milliseconds",
-        unit="ms",
-    )
+    # Job processing metrics
     _job_counter = _meter.create_counter(
         "worker.job.count",
         description="Total jobs processed by the worker",
@@ -101,31 +89,11 @@ def get_meter() -> metrics.Meter:
     return _meter
 
 
-def record_request(method: str, path: str, status_code: int, duration_ms: float) -> None:
-    """Record an HTTP request metric.
-
-    Args:
-        method: HTTP method (GET, POST, etc.)
-        path: Request path
-        status_code: Response status code
-        duration_ms: Request duration in milliseconds
-    """
-    attrs: dict[str, str | int] = {
-        "http.method": method,
-        "http.route": path,
-        "http.status_code": status_code,
-    }
-    if _request_counter:
-        _request_counter.add(1, attrs)
-    if _request_duration:
-        _request_duration.record(duration_ms, attrs)
-
-
 def record_job_processed(action: str, status: str, duration_ms: float) -> None:
     """Record a job processing metric.
 
     Args:
-        action: Job action type (generate, summarize, refresh)
+        action: Job action type (generate, summarize, refresh, ask_grok)
         status: Job outcome (ok, permanent_error, transient_error)
         duration_ms: Processing duration in milliseconds
     """

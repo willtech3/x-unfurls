@@ -197,3 +197,91 @@ class TestServiceUnfurlFlow:
         assert len(fake_slack.post_message_calls) == 1
         posted = fake_slack.post_message_calls[0]
         assert posted.thread_ts == job.message_ts
+
+
+# ---------------------------------------------------------------------------
+# _build_ask_grok_reply_blocks structure tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildAskGrokReplyBlocks:
+    """Verify structure and sanitization of Ask Grok reply blocks."""
+
+    def test_block_structure(self) -> None:
+        blocks = XUnfurlService._build_ask_grok_reply_blocks("U001", "What is this?", "An answer.")
+
+        assert len(blocks) == 5
+        assert blocks[0]["type"] == "context"  # "<@U001> asked:"
+        assert blocks[1]["type"] == "section"  # quoted question
+        assert blocks[2]["type"] == "divider"
+        assert blocks[3]["type"] == "section"  # Grok answer
+        assert blocks[4]["type"] == "context"  # footer
+
+    def test_answer_contains_grok_prefix(self) -> None:
+        blocks = XUnfurlService._build_ask_grok_reply_blocks("U001", "Q?", "The answer.")
+        answer_text = blocks[3]["text"]["text"]
+        assert answer_text.startswith("✦  *Grok*\n")
+
+    def test_question_is_quoted(self) -> None:
+        blocks = XUnfurlService._build_ask_grok_reply_blocks("U001", "Why?", "Because.")
+        question_text = blocks[1]["text"]["text"]
+        assert question_text.startswith("> ")
+
+    def test_long_answer_truncated_with_ellipsis(self) -> None:
+        long_answer = "x" * 4000
+        blocks = XUnfurlService._build_ask_grok_reply_blocks("U001", "Q?", long_answer)
+        answer_text = blocks[3]["text"]["text"]
+        assert answer_text.endswith("...")
+        # Grok prefix + truncated answer should be under Slack's 3000 limit + prefix
+        assert len(answer_text) < 3100
+
+    def test_sanitizes_mentions_in_answer(self) -> None:
+        malicious_answer = "Hey @channel check <@U999> and <!subteam^S123>"
+        blocks = XUnfurlService._build_ask_grok_reply_blocks("U001", "Q?", malicious_answer)
+        answer_text = blocks[3]["text"]["text"]
+        # Broadcast mentions should have zero-width space inserted
+        assert "@channel" not in answer_text
+        assert "@\u200bchannel" in answer_text
+        # Targeted mentions should be broken
+        assert "<@U999>" not in answer_text
+
+    def test_sanitizes_mentions_in_question(self) -> None:
+        malicious_question = "Tell @everyone about <@U999>"
+        blocks = XUnfurlService._build_ask_grok_reply_blocks("U001", malicious_question, "Safe.")
+        question_text = blocks[1]["text"]["text"]
+        assert "@everyone" not in question_text
+        assert "@\u200beveryone" in question_text
+
+
+# ---------------------------------------------------------------------------
+# Thumbnail domain allowlist tests
+# ---------------------------------------------------------------------------
+
+
+class TestThumbnailDomainAllowlist:
+    """SSRF mitigation: only allowlisted domains pass thumbnail validation."""
+
+    async def test_non_allowlisted_domain_is_cleared(
+        self, make_post_snapshot: Callable[..., XPostSnapshot]
+    ) -> None:
+        evil_url = "http://169.254.169.254/latest/meta-data/"
+        video = XMedia(type="video", url="vid.mp4", thumbnail_url=evil_url)
+        snapshot = make_post_snapshot(media=[video])
+
+        await _validate_video_thumbnails(snapshot)
+
+        assert snapshot.media[0].thumbnail_url is None
+
+    @respx.mock
+    async def test_allowlisted_domain_proceeds(
+        self, make_post_snapshot: Callable[..., XPostSnapshot]
+    ) -> None:
+        url = "https://pbs.twimg.com/ext_tw_video_thumb/123.jpg"
+        respx.head(url).mock(return_value=httpx.Response(200))
+
+        video = XMedia(type="video", url="vid.mp4", thumbnail_url=url)
+        snapshot = make_post_snapshot(media=[video])
+
+        await _validate_video_thumbnails(snapshot)
+
+        assert snapshot.media[0].thumbnail_url == url

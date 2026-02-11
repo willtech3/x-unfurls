@@ -5,14 +5,19 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from shared.domain.dtos import XUnfurlJobDto
 from shared.domain.repositories.slack_repository import SlackUnfurlRepository
+from shared.infrastructure.observability import get_tracer
 from xunfurls.application.presenters.x_unfurl_blocks import XUnfurlBlocksBuilder
 from xunfurls.domain.entities import XMedia, XPostSnapshot, XStatusRef
 from xunfurls.domain.repositories.x_repository import FetchMode, XRepository
+
+# Allowlisted hostnames for thumbnail HEAD checks (SSRF mitigation)
+_THUMBNAIL_DOMAIN_ALLOWLIST = {"pbs.twimg.com", "video.twimg.com"}
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +113,14 @@ class XUnfurlService:
         user_id: str, question: str, answer: str
     ) -> list[dict[str, Any]]:
         """Build blocks for a Grok follow-up reply in a thread."""
+        sanitizer = XUnfurlBlocksBuilder()
+
+        # Sanitize and truncate both user input and AI output
+        safe_question = sanitizer._sanitize_text(question[:500])
+        safe_answer = sanitizer._sanitize_text(answer[:3000])
+        if len(answer) > 3000:
+            safe_answer += "..."
+
         blocks: list[dict[str, Any]] = [
             {
                 "type": "context",
@@ -117,14 +130,14 @@ class XUnfurlService:
             },
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"> {question}"},
+                "text": {"type": "mrkdwn", "text": f"> {safe_question}"},
             },
             {"type": "divider"},
             {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"✦  *Grok*\n{answer[:3000]}",
+                    "text": f"✦  *Grok*\n{safe_answer}",
                 },
             },
             {
@@ -159,13 +172,29 @@ async def _validate_video_thumbnails(snapshot: XPostSnapshot) -> None:
     if not to_check:
         return
 
-    async with httpx.AsyncClient(timeout=_THUMB_VALIDATE_TIMEOUT) as client:
-        await asyncio.gather(*[_check_thumbnail(client, m) for m in to_check])
+    tracer = get_tracer()
+    with tracer.start_as_current_span(
+        "validate_video_thumbnails", attributes={"thumbnail.count": len(to_check)}
+    ):
+        async with httpx.AsyncClient(timeout=_THUMB_VALIDATE_TIMEOUT) as client:
+            await asyncio.gather(*[_check_thumbnail(client, m) for m in to_check])
 
 
 async def _check_thumbnail(client: httpx.AsyncClient, media: XMedia) -> None:
     """HEAD-check a single thumbnail URL; null it out on failure."""
     assert media.thumbnail_url is not None  # caller guarantees this
+
+    # SSRF mitigation: only allow known Twitter CDN domains
+    try:
+        parsed = urlparse(media.thumbnail_url)
+        if parsed.hostname not in _THUMBNAIL_DOMAIN_ALLOWLIST:
+            logger.info("Thumbnail domain not allowlisted, clearing: %s", media.thumbnail_url)
+            media.thumbnail_url = None
+            return
+    except Exception:
+        media.thumbnail_url = None
+        return
+
     try:
         resp = await client.head(media.thumbnail_url, follow_redirects=True)
         if resp.status_code != 200:
@@ -176,7 +205,7 @@ async def _check_thumbnail(client: httpx.AsyncClient, media: XMedia) -> None:
             )
             media.thumbnail_url = None
         else:
-            logger.info("Thumbnail HEAD OK: %s", media.thumbnail_url)
+            logger.debug("Thumbnail HEAD OK: %s", media.thumbnail_url)
     except Exception:
         logger.info("Thumbnail HEAD failed, clearing: %s", media.thumbnail_url, exc_info=True)
         media.thumbnail_url = None

@@ -1,4 +1,4 @@
-"""Tests for Grok summary button interactive flow (UI-7)."""
+"""Tests for Grok button interactive flow (Ask Grok modal)."""
 
 from __future__ import annotations
 
@@ -11,8 +11,6 @@ from unittest.mock import AsyncMock, patch
 
 from starlette.testclient import TestClient
 
-from shared.domain.dtos import XUnfurlJobDto
-
 SIGNING_SECRET = "test_signing_secret_for_grok_button"
 
 
@@ -24,7 +22,7 @@ def _make_valid_signature(body: bytes, ts: str) -> str:
 
 
 def _make_interactive_payload(
-    action_id: str = "x_unfurl_summarize",
+    action_id: str = "x_unfurl_ask_grok",
     value: str = "https://x.com/testuser/status/123456",
     channel_id: str = "C0123456789",
     message_ts: str = "1700000000.000100",
@@ -68,31 +66,31 @@ def _post_interactive(client: TestClient, payload: dict[str, Any]) -> Any:
 
 
 class TestGrokButtonInteractive:
-    """Test the /slack/interactive endpoint handling for summarize button."""
+    """Test the /slack/interactive endpoint handling for Ask Grok button."""
 
-    @patch.dict("os.environ", {"SLACK_SIGNING_SECRET": SIGNING_SECRET})
-    def test_summarize_action_enqueues_job(self) -> None:
-        """Clicking 'Summarize with Grok' should enqueue a summarize job."""
-        from xunfurls.infrastructure.gcp.webhook_app import app, set_job_queue
+    @patch("xunfurls.infrastructure.gcp.webhook_app._SIGNING_SECRET", SIGNING_SECRET)
+    def test_ask_grok_action_opens_modal(self) -> None:
+        """Clicking 'Ask Grok' should open a modal via views.open."""
+        from xunfurls.infrastructure.gcp.webhook_app import app, set_slack_client
 
-        mock_queue = AsyncMock()
-        mock_queue.enqueue_job = AsyncMock(return_value="msg-id-123")
-        set_job_queue(mock_queue)
+        mock_slack = AsyncMock()
+        mock_slack.open_modal = AsyncMock()
+        set_slack_client(mock_slack)
 
         client = TestClient(app)
         payload = _make_interactive_payload()
         resp = _post_interactive(client, payload)
 
         assert resp.status_code == 200
-        mock_queue.enqueue_job.assert_called_once()
-        enqueued_job: XUnfurlJobDto = mock_queue.enqueue_job.call_args[0][0]
-        assert enqueued_job.action == "summarize"
-        assert enqueued_job.status_id == "123456"
-        assert enqueued_job.canonical_url == "https://x.com/testuser/status/123456"
-        assert enqueued_job.channel_id == "C0123456789"
-        assert enqueued_job.message_ts == "1700000000.000100"
+        mock_slack.open_modal.assert_called_once()
+        call_args = mock_slack.open_modal.call_args
+        trigger_id = call_args[0][0]
+        view = call_args[0][1]
+        assert trigger_id == "trigger-123"
+        assert view["callback_id"] == "ask_grok_modal"
+        assert view["type"] == "modal"
 
-    @patch.dict("os.environ", {"SLACK_SIGNING_SECRET": SIGNING_SECRET})
+    @patch("xunfurls.infrastructure.gcp.webhook_app._SIGNING_SECRET", SIGNING_SECRET)
     def test_unknown_action_returns_ok(self) -> None:
         """Unknown action_ids should be silently accepted (no error)."""
         from xunfurls.infrastructure.gcp.webhook_app import app
@@ -104,7 +102,7 @@ class TestGrokButtonInteractive:
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
 
-    @patch.dict("os.environ", {"SLACK_SIGNING_SECRET": SIGNING_SECRET})
+    @patch("xunfurls.infrastructure.gcp.webhook_app._SIGNING_SECRET", SIGNING_SECRET)
     def test_open_in_x_action_ignored(self) -> None:
         """The 'Open in X' button (link button) shouldn't trigger any job."""
         from xunfurls.infrastructure.gcp.webhook_app import app, set_job_queue
@@ -119,34 +117,37 @@ class TestGrokButtonInteractive:
         assert resp.status_code == 200
         mock_queue.enqueue_job.assert_not_called()
 
-    @patch.dict("os.environ", {"SLACK_SIGNING_SECRET": SIGNING_SECRET})
-    def test_summarize_extracts_status_id_from_canonical_url(self) -> None:
-        """Status ID should be parsed from the canonical URL in the button value."""
-        from xunfurls.infrastructure.gcp.webhook_app import app, set_job_queue
+    @patch("xunfurls.infrastructure.gcp.webhook_app._SIGNING_SECRET", SIGNING_SECRET)
+    def test_ask_grok_modal_metadata_includes_canonical_url(self) -> None:
+        """The modal private_metadata should contain canonical_url for submission."""
+        from xunfurls.infrastructure.gcp.webhook_app import app, set_slack_client
 
-        mock_queue = AsyncMock()
-        mock_queue.enqueue_job = AsyncMock(return_value="msg-id")
-        set_job_queue(mock_queue)
+        mock_slack = AsyncMock()
+        mock_slack.open_modal = AsyncMock()
+        set_slack_client(mock_slack)
 
         client = TestClient(app)
         payload = _make_interactive_payload(value="https://x.com/elonmusk/status/9876543210")
         resp = _post_interactive(client, payload)
 
         assert resp.status_code == 200
-        enqueued_job: XUnfurlJobDto = mock_queue.enqueue_job.call_args[0][0]
-        assert enqueued_job.status_id == "9876543210"
+        view = mock_slack.open_modal.call_args[0][1]
+        metadata = json.loads(view["private_metadata"])
+        assert metadata["canonical_url"] == "https://x.com/elonmusk/status/9876543210"
 
-    @patch.dict("os.environ", {"SLACK_SIGNING_SECRET": SIGNING_SECRET})
-    def test_summarize_with_invalid_url_returns_ok(self) -> None:
-        """If the button value has no valid status ID, return OK but don't enqueue."""
-        from xunfurls.infrastructure.gcp.webhook_app import app, set_job_queue
+    @patch("xunfurls.infrastructure.gcp.webhook_app._SIGNING_SECRET", SIGNING_SECRET)
+    def test_ask_grok_no_trigger_id_logs_warning(self) -> None:
+        """If trigger_id is missing, the modal should not be opened."""
+        from xunfurls.infrastructure.gcp.webhook_app import app, set_slack_client
 
-        mock_queue = AsyncMock()
-        set_job_queue(mock_queue)
+        mock_slack = AsyncMock()
+        mock_slack.open_modal = AsyncMock()
+        set_slack_client(mock_slack)
 
         client = TestClient(app)
-        payload = _make_interactive_payload(value="https://x.com/nope")
+        payload = _make_interactive_payload()
+        payload["trigger_id"] = ""  # Remove trigger_id
         resp = _post_interactive(client, payload)
 
         assert resp.status_code == 200
-        mock_queue.enqueue_job.assert_not_called()
+        mock_slack.open_modal.assert_not_called()

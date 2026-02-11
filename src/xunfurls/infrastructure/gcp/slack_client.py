@@ -9,6 +9,7 @@ import httpx
 
 from shared.domain.repositories.slack_repository import SlackUnfurlRepository
 from shared.infrastructure.logging import log_event
+from shared.infrastructure.observability import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,11 @@ class SlackHttpClient(SlackUnfurlRepository):
         """
         payload = {"channel": channel_id, "ts": message_ts, "unfurls": unfurls}
 
-        response = await self._client.post("/chat.unfurl", json=payload)
+        tracer = get_tracer()
+        with tracer.start_as_current_span(
+            "slack_unfurl_links", attributes={"slack.channel": channel_id}
+        ):
+            response = await self._client.post("/chat.unfurl", json=payload)
         response.raise_for_status()
 
         data = response.json()
@@ -123,8 +128,12 @@ class SlackHttpClient(SlackUnfurlRepository):
         if thread_ts:
             payload["thread_ts"] = thread_ts
 
-        response = await self._client.post("/chat.postMessage", json=payload)
-        response.raise_for_status()
+        tracer = get_tracer()
+        with tracer.start_as_current_span(
+            "slack_post_message", attributes={"slack.channel": channel_id}
+        ):
+            response = await self._client.post("/chat.postMessage", json=payload)
+            response.raise_for_status()
 
         data = response.json()
         if not data.get("ok"):
@@ -180,6 +189,32 @@ class SlackHttpClient(SlackUnfurlRepository):
             raise RuntimeError(f"Slack views.open error: {error}")
 
         log_event(logger, logging.INFO, "Opened modal", event="modal_opened")
+
+    async def post_ephemeral(
+        self, channel_id: str, user_id: str, text: str, thread_ts: str = ""
+    ) -> None:
+        """Post an ephemeral message visible only to one user.
+
+        Args:
+            channel_id: Channel to post in
+            user_id: User who will see the message
+            text: Message text
+            thread_ts: If set, posts in a thread
+        """
+        payload: dict[str, Any] = {
+            "channel": channel_id,
+            "user": user_id,
+            "text": text,
+        }
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
+
+        response = await self._client.post("/chat.postEphemeral", json=payload)
+        response.raise_for_status()
+
+        data = response.json()
+        if not data.get("ok"):
+            logger.warning("Ephemeral message failed: %s", data.get("error", "unknown_error"))
 
     async def close(self) -> None:
         """Close the HTTP client."""

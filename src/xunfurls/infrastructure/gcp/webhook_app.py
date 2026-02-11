@@ -29,6 +29,14 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Validate signing secret at startup to prevent HMAC degradation to empty key
+_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
+if not _SIGNING_SECRET and os.environ.get("TESTING") != "1":
+    raise RuntimeError(
+        "SLACK_SIGNING_SECRET is not set. "
+        "Refusing to start -- an empty signing secret would allow forged requests."
+    )
+
 # CQ-3: Injectable job queue (supports DI for testing)
 _job_queue: JobQueueProducer | None = None
 
@@ -189,11 +197,10 @@ async def slack_events(request: Request) -> dict[str, Any]:
     body = await request.body()
 
     # Validate signature
-    signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "")
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
     signature = request.headers.get("X-Slack-Signature", "")
 
-    if not validate_slack_signature(body, timestamp, signature, signing_secret):
+    if not validate_slack_signature(body, timestamp, signature, _SIGNING_SECRET):
         log_event(logger, logging.WARNING, "Invalid Slack signature", event="auth_failed")
         raise HTTPException(status_code=401, detail="Invalid signature")
 
@@ -364,11 +371,10 @@ async def slack_interactive(request: Request) -> Response:
 
     # CQ-4: Validate Slack signature on interactive endpoint
     body = await request.body()
-    signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "")
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
     signature = request.headers.get("X-Slack-Signature", "")
 
-    if not validate_slack_signature(body, timestamp, signature, signing_secret):
+    if not validate_slack_signature(body, timestamp, signature, _SIGNING_SECRET):
         log_event(logger, logging.WARNING, "Invalid Slack signature", event="auth_failed")
         raise HTTPException(status_code=401, detail="Invalid signature")
 
@@ -376,11 +382,13 @@ async def slack_interactive(request: Request) -> Response:
     form_data = parse_qs(body.decode("utf-8"))
     payload_str = form_data.get("payload", [""])[0]
     if not payload_str:
+        logger.warning("Empty interactive payload received, acknowledging")
         return JSONResponse({"ok": True})
 
     try:
         payload = json.loads(payload_str)
     except json.JSONDecodeError:
+        logger.warning("Invalid JSON in interactive payload, acknowledging")
         return JSONResponse({"ok": True})
 
     # Dispatch on payload type
@@ -410,9 +418,6 @@ async def _handle_block_actions(payload: dict[str, Any]) -> None:
 
     if action_id == "x_unfurl_ask_grok":
         await _handle_ask_grok_action(payload, action)
-    elif action_id == "x_unfurl_summarize":
-        # Legacy: still handle old summarize action
-        await _handle_summarize_action(payload, action)
 
 
 async def _handle_ask_grok_action(payload: dict[str, Any], action: dict[str, Any]) -> None:
@@ -550,6 +555,18 @@ async def _handle_ask_grok_submission(payload: dict[str, Any]) -> None:
 
     message_id = await get_job_queue().enqueue_job(job)
 
+    # Send ephemeral "thinking" feedback so the user knows the request was received
+    try:
+        slack = get_slack_client()
+        await slack.post_ephemeral(
+            channel_id=channel_id,
+            user_id=user_id,
+            text="✦ Grok is thinking...",
+            thread_ts=message_ts,
+        )
+    except Exception:
+        logger.debug("Failed to send ephemeral thinking message", exc_info=True)
+
     log_event(
         logger,
         logging.INFO,
@@ -559,53 +576,4 @@ async def _handle_ask_grok_submission(payload: dict[str, Any]) -> None:
         status_id=status_id,
         message_id=message_id,
         user_id=user_id,
-    )
-
-
-async def _handle_summarize_action(payload: dict[str, Any], action: dict[str, Any]) -> None:
-    """Handle legacy 'Summarize with Grok' button click.
-
-    Enqueues a summarize job for the post identified by the button value.
-
-    Args:
-        payload: Full interactive payload (contains channel/message context)
-        action: The specific action that was triggered
-    """
-    canonical_url = action.get("value", "")
-    status_id = extract_status_id(canonical_url)
-    if not status_id:
-        log_event(
-            logger,
-            logging.WARNING,
-            "Could not extract status ID from summarize action",
-            event="summarize_invalid_url",
-            url=canonical_url,
-        )
-        return
-
-    channel_id = payload.get("channel", {}).get("id", "")
-    message_ts = payload.get("container", {}).get("message_ts", "")
-
-    job = XUnfurlJobDto(
-        job_id=str(uuid.uuid4()),
-        channel_id=channel_id,
-        message_ts=message_ts,
-        team_id="",
-        original_url=canonical_url,
-        canonical_url=canonical_url,
-        status_id=status_id,
-        action="summarize",
-        trace_id=str(uuid.uuid4()),
-    )
-
-    message_id = await get_job_queue().enqueue_job(job)
-
-    log_event(
-        logger,
-        logging.INFO,
-        "Enqueued Grok summarize job",
-        event="summarize_enqueued",
-        job_id=job.job_id,
-        status_id=status_id,
-        message_id=message_id,
     )

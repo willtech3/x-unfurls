@@ -9,10 +9,13 @@ States:
 - HALF_OPEN: After recovery timeout, one probe request is allowed through
 """
 
+import logging
 import time
 
 from xunfurls.domain.entities import XPostSnapshot, XStatusRef
 from xunfurls.domain.repositories.x_repository import FetchMode, XRepository
+
+logger = logging.getLogger(__name__)
 
 
 class CircuitOpenError(RuntimeError):
@@ -42,15 +45,23 @@ class CircuitBreakerXRepository:
                 raise CircuitOpenError(
                     f"Circuit breaker open, {self._failure_count} consecutive failures"
                 )
+            logger.info("Circuit breaker entering half-open state, allowing probe request")
             self._is_open = False
 
     def _record_success(self) -> None:
+        if self._failure_count > 0:
+            logger.info("Circuit breaker reset after successful request")
         self._failure_count = 0
 
     def _record_failure(self) -> None:
         self._failure_count += 1
         self._last_failure_time = time.monotonic()
         if self._failure_count >= self._failure_threshold:
+            if not self._is_open:
+                logger.warning(
+                    "Circuit breaker opened after %d consecutive failures",
+                    self._failure_count,
+                )
             self._is_open = True
 
     async def fetch_post_snapshot(self, status_ref: XStatusRef, mode: FetchMode) -> XPostSnapshot:

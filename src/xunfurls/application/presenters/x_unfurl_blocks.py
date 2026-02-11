@@ -5,6 +5,7 @@ Uses header, section, context, image, divider, and actions blocks
 wrapped in a colored attachment for a polished layout.
 """
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,11 +17,6 @@ class XUnfurlBlocksBuilder:
 
     # X brand blue — used as the attachment left-bar accent color
     ACCENT_COLOR = "#1D9BF0"
-
-    # Slack client errors that will never succeed on retry
-    PERMANENT_SLACK_ERRORS = frozenset(
-        {"invalid_blocks", "channel_not_found", "not_in_channel", "invalid_auth", "no_text"}
-    )
 
     def build_unfurl_blocks(
         self, snapshot: XPostSnapshot, canonical_url: str
@@ -173,6 +169,7 @@ class XUnfurlBlocksBuilder:
                     },
                     "action_id": "x_unfurl_ask_grok",
                     "value": canonical_url,
+                    "style": "primary",
                 }
             )
         blocks.append({"type": "actions", "elements": action_elements})
@@ -252,11 +249,20 @@ class XUnfurlBlocksBuilder:
         """Strip leading @ from handle if xAI included it."""
         return handle.lstrip("@")
 
+    # Pattern for Slack special mentions: <@U123>, <!subteam^S123>, <#C123>
+    _SLACK_MENTION_RE = re.compile(r"<([@!#])")
+
     def _sanitize_text(self, text: str) -> str:
-        """Sanitize text to prevent Slack mention spam."""
+        """Sanitize text to prevent Slack mention spam.
+
+        Handles broadcast mentions (@channel/@here/@everyone) and
+        targeted mentions (<@USER_ID>, <!subteam^ID>, <#CHANNEL>).
+        """
         text = text.replace("@channel", "@\u200bchannel")
         text = text.replace("@here", "@\u200bhere")
         text = text.replace("@everyone", "@\u200beveryone")
+        # Break <@U…>, <!subteam…>, <#C…> patterns
+        text = self._SLACK_MENTION_RE.sub("<\u200b\\1", text)
         return self._truncate(text, 3000)
 
     def _truncate(self, text: str, max_length: int) -> str:
@@ -266,27 +272,16 @@ class XUnfurlBlocksBuilder:
         return text[: max_length - 3] + "..."
 
     def _format_timestamp(self, dt: datetime) -> str:
-        """Format timestamp as relative for recent posts, absolute for older."""
-        now = datetime.now(UTC)
+        """Format timestamp using Slack's native date formatting.
+
+        Uses <!date^{unix_ts}^{format}|fallback> syntax which auto-updates
+        and respects the viewer's timezone.
+        """
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
-        delta = now - dt
-        seconds = int(delta.total_seconds())
-
-        if seconds < 0:
-            return dt.strftime("%b %d, %Y")
-        if seconds < 60:
-            return "just now"
-        if seconds < 3600:
-            minutes = seconds // 60
-            return f"{minutes}m ago"
-        if seconds < 86400:
-            hours = seconds // 3600
-            return f"{hours}h ago"
-        if seconds < 604800:  # 7 days
-            days = seconds // 86400
-            return f"{days}d ago"
-        return dt.strftime("%b %d, %Y")
+        unix_ts = int(dt.timestamp())
+        fallback = dt.strftime("%b %d, %Y")
+        return f"<!date^{unix_ts}^{{date_short_pretty}} at {{time}}|{fallback}>"
 
     def _format_number(self, n: int) -> str:
         """Format large numbers (e.g., 1.2K, 3.4M)."""

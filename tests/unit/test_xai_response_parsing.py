@@ -87,10 +87,8 @@ class TestTimezoneAwareness:
         fallback = create_fallback_snapshot()
         resp = _make_xai_response(valid_response_data)
         parsed = parse_xai_response(resp)
-        # This should NOT raise TypeError
-        assert (fallback.created_at < parsed.created_at) or (
-            fallback.created_at >= parsed.created_at
-        )
+        # Verify comparison doesn't raise TypeError (both must be tz-aware)
+        _ = fallback.created_at < parsed.created_at
 
     def test_z_suffix_parsed_as_utc(self):
         data = {"created_at": "2024-01-15T12:00:00Z"}
