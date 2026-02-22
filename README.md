@@ -66,7 +66,7 @@ graph TB
 
 ## Deployment
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for detailed deployment instructions.
 
 Quick steps:
 1. Set up GCP infrastructure with Terraform
